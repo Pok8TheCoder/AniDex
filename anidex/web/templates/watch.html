@@ -103,6 +103,111 @@ function currentEps() {
   return seasons[i]?.episodes || [];
 }
 
+const DL_MAX = 2;
+let dlActive = 0;
+/** @type {{ ep: any, cb: HTMLInputElement, resolve: Function, reject: Function }[]} */
+const dlQueue = [];
+/** episode_session → true while queued or downloading */
+const dlBusy = new Set();
+
+function dlStatusLine() {
+  const q = dlQueue.length;
+  const a = dlActive;
+  if (!a && !q) return;
+  $("#ep-status").textContent = `Downloads: ${a} active` + (q ? `, ${q} queued` : "") + ` (max ${DL_MAX})`;
+}
+
+function pumpDownloads() {
+  while (dlActive < DL_MAX && dlQueue.length) {
+    const item = dlQueue.shift();
+    dlActive++;
+    dlStatusLine();
+    runQueuedDownload(item)
+      .then(item.resolve, item.reject)
+      .finally(() => {
+        dlActive--;
+        dlBusy.delete(item.ep.episode_session);
+        item.cb.disabled = false;
+        item.cb.closest(".ep-tile")?.classList.remove("dl-busy");
+        dlStatusLine();
+        pumpDownloads();
+      });
+  }
+}
+
+async function runQueuedDownload({ ep, cb }) {
+  const season = seasons[+$("#season").value];
+  if (!season) throw new Error("No season selected");
+  const label = LF.fmtEp(ep.episode);
+  $("#ep-status").textContent = `Downloading E${label}…`;
+  const { job_id } = await api("/api/watch/download", {
+    method: "POST",
+    body: JSON.stringify({
+      user_anime_id: USER_ANIME_ID,
+      anime_session: season.pahe_session,
+      episode_session: ep.episode_session,
+      episode: ep.episode,
+      audio, resolution,
+    }),
+  });
+  const job = await pollJob(job_id, {
+    onProgress: (j) => {
+      const msg = j.message || "";
+      $("#ep-status").textContent = j.total
+        ? `E${label}: ${msg} (${j.progress}/${j.total})`
+        : `E${label}: ${msg}`;
+    },
+  });
+  const path = job.result?.path || job.result?.filename || `E${label}`;
+  $("#ep-status").textContent = `Saved ${path}`;
+  await loadCatalog(false);
+  return job;
+}
+
+function enqueueDownload(ep, cb) {
+  return new Promise((resolve, reject) => {
+    if (dlBusy.has(ep.episode_session)) {
+      resolve(null);
+      return;
+    }
+    dlBusy.add(ep.episode_session);
+    cb.disabled = true;
+    cb.closest(".ep-tile")?.classList.add("dl-busy");
+    dlQueue.push({ ep, cb, resolve, reject });
+    dlStatusLine();
+    pumpDownloads();
+  });
+}
+
+function cancelQueuedDownload(episodeSession) {
+  const idx = dlQueue.findIndex((x) => x.ep.episode_session === episodeSession);
+  if (idx < 0) return false;
+  const [item] = dlQueue.splice(idx, 1);
+  dlBusy.delete(episodeSession);
+  item.cb.disabled = false;
+  item.cb.checked = false;
+  item.cb.closest(".ep-tile")?.classList.remove("dl-busy");
+  item.reject(new Error("Cancelled"));
+  dlStatusLine();
+  return true;
+}
+
+async function deleteEpisodeDownload(ep) {
+  if (!ep.media_id) {
+    await loadCatalog(false);
+    return;
+  }
+  await api(`/api/media/${ep.media_id}`, { method: "DELETE" });
+  if (selected?.episode_session === ep.episode_session) {
+    destroyHls();
+    selected.downloaded = false;
+    selected.media_id = null;
+    $("#btn-del").disabled = true;
+  }
+  $("#ep-status").textContent = `Deleted E${LF.fmtEp(ep.episode)}`;
+  await loadCatalog(false);
+}
+
 function rebuildEps() {
   const q = $("#ep-search").value.trim();
   const grid = $("#ep-grid");
@@ -112,13 +217,59 @@ function rebuildEps() {
     if (q && !label.includes(q) && !(ep.title || "").toLowerCase().includes(q.toLowerCase())) {
       if (String(ep.episode) !== q) return;
     }
-    const b = document.createElement("button");
-    b.className = "ep-tile" + (ep.downloaded ? " downloaded" : "");
-    if (selected && selected.episode_session === ep.episode_session) b.classList.add("active");
-    b.textContent = label;
-    b.title = `E${label}` + (ep.title ? " — " + ep.title : "") + (ep.downloaded ? " · Downloaded" : "");
-    b.onclick = () => selectEp(ep, true);
-    grid.appendChild(b);
+    const wrap = document.createElement("div");
+    wrap.className = "ep-tile" + (ep.downloaded ? " downloaded" : "");
+    if (selected && selected.episode_session === ep.episode_session) wrap.classList.add("active");
+    if (dlBusy.has(ep.episode_session)) wrap.classList.add("dl-busy");
+    wrap.title = `E${label}` + (ep.title ? " — " + ep.title : "") + (ep.downloaded ? " · Downloaded" : "");
+
+    const num = document.createElement("span");
+    num.textContent = label;
+    wrap.appendChild(num);
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.className = "ep-dl";
+    cb.title = ep.downloaded ? "Remove download" : "Download episode";
+    cb.checked = !!ep.downloaded || dlBusy.has(ep.episode_session);
+    cb.disabled = dlBusy.has(ep.episode_session);
+    cb.addEventListener("click", (ev) => ev.stopPropagation());
+    cb.addEventListener("change", async () => {
+      if (cb.checked) {
+        try {
+          await enqueueDownload(ep, cb);
+        } catch (err) {
+          if (String(err.message || err) !== "Cancelled") {
+            cb.checked = false;
+            $("#ep-status").textContent = err.message || String(err);
+          }
+        }
+      } else {
+        if (cancelQueuedDownload(ep.episode_session)) {
+          $("#ep-status").textContent = `Cancelled E${label}`;
+          return;
+        }
+        if (dlBusy.has(ep.episode_session)) {
+          // Already downloading — keep checked until job finishes
+          cb.checked = true;
+          $("#ep-status").textContent = `E${label} still downloading — wait to delete`;
+          return;
+        }
+        cb.disabled = true;
+        try {
+          await deleteEpisodeDownload(ep);
+        } catch (err) {
+          cb.checked = true;
+          $("#ep-status").textContent = err.message || String(err);
+        } finally {
+          cb.disabled = false;
+        }
+      }
+    });
+    wrap.appendChild(cb);
+
+    wrap.onclick = () => selectEp(ep, true);
+    grid.appendChild(wrap);
   });
 }
 
@@ -301,32 +452,31 @@ $("#btn-next").onclick = () => {
 
 $("#btn-dl").onclick = async () => {
   if (!selected) return;
-  $("#ep-status").textContent = "Downloading…";
+  const ep = currentEps().find((e) => e.episode_session === selected.episode_session);
+  if (!ep) return;
+  // Find checkbox for this ep after rebuild, or synthesize
   try {
-    const { job_id } = await api("/api/watch/download", {
-      method: "POST",
-      body: JSON.stringify({
-        user_anime_id: USER_ANIME_ID,
-        anime_session: selected.anime_session,
-        episode_session: selected.episode_session,
-        episode: selected.episode,
-        audio, resolution,
-      }),
-    });
-    const job = await pollJob(job_id, { onProgress: j => {
-      $("#ep-status").textContent = j.total ? `${j.message} (${j.progress}/${j.total})` : (j.message || "");
-    }});
-    $("#ep-status").textContent = `Saved ${job.result.path}`;
-    await loadCatalog(false);
-  } catch (e) { $("#ep-status").textContent = e.message; }
+    const fakeCb = { disabled: false, checked: true, closest: () => null };
+    await enqueueDownload(ep, fakeCb);
+  } catch (e) {
+    $("#ep-status").textContent = e.message;
+  }
 };
 
 $("#btn-del").onclick = async () => {
   if (!selected?.media_id || !confirm("Delete local file?")) return;
-  await api(`/api/media/${selected.media_id}`, { method: "DELETE" });
-  destroyHls();
-  await loadCatalog(false);
-  $("#ep-status").textContent = "Deleted download";
+  const ep = currentEps().find((e) => e.episode_session === selected.episode_session);
+  try {
+    if (ep) await deleteEpisodeDownload(ep);
+    else {
+      await api(`/api/media/${selected.media_id}`, { method: "DELETE" });
+      destroyHls();
+      await loadCatalog(false);
+      $("#ep-status").textContent = "Deleted download";
+    }
+  } catch (e) {
+    $("#ep-status").textContent = e.message;
+  }
 };
 
 window.addEventListener("beforeunload", destroyHls);

@@ -1379,8 +1379,25 @@ def watch_download(body: DownloadBody) -> dict[str, Any]:
             job.message = "Syncing file from PC…"
             result = run_sync(peer)
             live_sync.mark_dirty(reason="after_remote_download")
+            ep_label = (
+                str(int(body.episode))
+                if body.episode is not None and float(body.episode).is_integer()
+                else (str(body.episode) if body.episode is not None else "?")
+            )
+            saved_path = f"PC → phone (E{ep_label})"
+            media_id = None
+            with rc() as repo:
+                for m in repo.list_media(body.user_anime_id):
+                    if m.pahe_episode_session == body.episode_session:
+                        from anidex.web.security import redact_path
+
+                        saved_path = redact_path(m.path) or saved_path
+                        media_id = m.id
+                        break
             return {
                 "remote": True,
+                "path": saved_path,
+                "media_id": media_id,
                 "synced": bool(result and result.get("ok")),
                 "media_downloaded": (result or {}).get("media_downloaded"),
             }

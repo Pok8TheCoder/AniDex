@@ -206,16 +206,24 @@ label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px
   overflow: auto;
   padding-right: 4px;
   flex: 1;
+  align-content: start;
 }
 .ep-tile {
+  position: relative;
   background: #1e1b17;
   border: 1px solid var(--border);
   border-radius: 6px;
   color: #cfc6ba;
   font-weight: 700;
   font-size: 12px;
-  min-height: 36px;
+  aspect-ratio: 1;
+  width: 100%;
+  min-height: 0;
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
 }
 .ep-tile:hover { border-color: var(--accent); color: #f7f2ea; }
 .ep-tile.active {
@@ -224,6 +232,23 @@ label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px
   color: var(--ink);
 }
 .ep-tile.downloaded { border-color: #8a5a38; }
+.ep-tile.dl-busy { opacity: 0.75; }
+.ep-tile .ep-dl {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+  z-index: 2;
+}
+.ep-tile .ep-dl:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
 
 .player-chrome {
   background: #0c0b09;
