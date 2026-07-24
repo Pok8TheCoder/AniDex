@@ -36,9 +36,11 @@ _connected = False
 _loop: asyncio.AbstractEventLoop | None = None
 _supervisor_task: asyncio.Task | None = None
 _dirty_event: asyncio.Event | None = None
+_wake_event: asyncio.Event | None = None
 _inbound: set[Any] = set()  # WebSocket
 _outbound: Any | None = None  # websockets connection
 _stop = False
+_reset_backoff = False
 
 
 def status() -> dict[str, Any]:
@@ -352,19 +354,34 @@ async def _dirty_loop() -> None:
         await asyncio.get_running_loop().run_in_executor(None, run_sync_safe)
 
 
+async def _sleep_interruptible(seconds: float) -> None:
+    """Sleep but wake early when kick()/connect_now() fires."""
+    assert _wake_event is not None
+    try:
+        await asyncio.wait_for(_wake_event.wait(), timeout=max(0.05, seconds))
+        _wake_event.clear()
+    except asyncio.TimeoutError:
+        pass
+
+
 async def _supervisor() -> None:
-    global _dirty_event
+    global _dirty_event, _wake_event, _reset_backoff
     _dirty_event = asyncio.Event()
+    _wake_event = asyncio.Event()
     dirty_task = asyncio.create_task(_dirty_loop())
     backoff = _BACKOFF_START
     try:
         while not _stop:
+            if _reset_backoff:
+                backoff = _BACKOFF_START
+                _reset_backoff = False
+
             ident = ensure_sync_identity()
             peer = (ident.get("peer_url") or "").rstrip("/")
             token = ident.get("sync_token") or ""
             if not peer or not token:
                 _set_state("offline", connected=False, error="No peer URL or sync token")
-                await asyncio.sleep(5)
+                await _sleep_interruptible(5)
                 continue
 
             hello = await asyncio.get_running_loop().run_in_executor(
@@ -376,7 +393,7 @@ async def _supervisor() -> None:
                     connected=False,
                     error="Peer not reachable",
                 )
-                await asyncio.sleep(backoff)
+                await _sleep_interruptible(backoff)
                 backoff = min(_BACKOFF_MAX, backoff * 2)
                 continue
 
@@ -396,7 +413,7 @@ async def _supervisor() -> None:
 
             if _stop:
                 break
-            await asyncio.sleep(backoff)
+            await _sleep_interruptible(backoff)
             backoff = min(_BACKOFF_MAX, backoff * 2) if not is_connected() else _BACKOFF_START
             if is_connected():
                 backoff = _BACKOFF_START
@@ -427,6 +444,8 @@ async def stop() -> None:
     _stop = True
     if _dirty_event is not None:
         _dirty_event.set()
+    if _wake_event is not None:
+        _wake_event.set()
     out = _outbound
     if out is not None:
         try:
@@ -451,18 +470,44 @@ async def stop() -> None:
 
 def kick() -> None:
     """Force reconnect soon (e.g. after settings change)."""
-    mark_dirty(reason="settings")
-    # Reset by closing outbound
-    if _loop is not None and _outbound is not None:
-        async def _close() -> None:
-            out = _outbound
-            if out is not None:
-                try:
-                    await out.close()
-                except Exception:
-                    pass
+    connect_now()
 
+
+def connect_now() -> dict[str, Any]:
+    """Ensure supervisor is running and attempt WebSocket connect immediately.
+
+    Called from Settings → Sync now / Save peer.
+    """
+    global _reset_backoff
+    _reset_backoff = True
+    _set_state("connecting", error="")
+
+    # Ensure supervisor exists
+    if _loop is not None:
+        if _supervisor_task is None or _supervisor_task.done():
+            try:
+                start()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("restart live supervisor failed: %s", exc)
+
+    def _wake() -> None:
+        if _wake_event is not None:
+            _wake_event.set()
+
+    async def _close_outbound() -> None:
+        out = _outbound
+        if out is not None:
+            try:
+                await out.close()
+            except Exception:
+                pass
+
+    if _loop is not None:
         try:
-            asyncio.run_coroutine_threadsafe(_close(), _loop)
+            _loop.call_soon_threadsafe(_wake)
+            asyncio.run_coroutine_threadsafe(_close_outbound(), _loop)
         except RuntimeError:
             pass
+
+    mark_dirty(reason="connect_now")
+    return status()

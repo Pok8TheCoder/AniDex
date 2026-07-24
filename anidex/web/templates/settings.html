@@ -165,17 +165,30 @@ $("#sync-rotate").onclick = async () => {
   } catch (e) { $("#sync-msg").textContent = e.message; }
 };
 $("#sync-now").onclick = async () => {
-  $("#sync-msg").textContent = "Syncing…";
+  $("#sync-msg").textContent = "Connecting + syncing…";
   try {
+    // Save peer URL first so live WS can dial it
+    const peer = $("#sync-peer").value.trim();
+    const tok = $("#sync-token").value.trim();
+    if (peer || tok) {
+      await api("/api/sync/settings", {
+        method: "POST",
+        body: JSON.stringify({
+          peer_url: peer || null,
+          sync_token: tok || null,
+        }),
+      });
+    }
     const j = await api("/api/sync/run", {
       method: "POST",
-      body: JSON.stringify({ peer_url: $("#sync-peer").value.trim() || null }),
+      body: JSON.stringify({ peer_url: peer || null }),
     });
+    const live = (j.live || {}).state || "?";
     if (j.ok) {
       $("#sync-msg").textContent =
-        `Done — pulled ${JSON.stringify(j.pulled || {})}, media ↓${j.media_downloaded || 0}/↑${j.media_uploaded || 0}`;
+        `Done (live: ${live}) — pulled ${JSON.stringify(j.pulled || {})}, media ↓${j.media_downloaded || 0}/↑${j.media_uploaded || 0}`;
     } else {
-      $("#sync-msg").textContent = j.error || "Sync failed";
+      $("#sync-msg").textContent = (j.error || "Sync failed") + ` (live: ${live})`;
     }
     await loadSync();
   } catch (e) { $("#sync-msg").textContent = e.message; }

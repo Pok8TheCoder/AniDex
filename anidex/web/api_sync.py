@@ -414,8 +414,8 @@ def sync_settings(request: Request, body: ConfigBody) -> dict[str, Any]:
         set_peer_url(body.peer_url)
     if body.sync_token:
         set_sync_token(body.sync_token)
-    live_sync.kick()
-    return {"ok": True, **get_sync_identity(), "live": live_sync.status()}
+    live_info = live_sync.connect_now()
+    return {"ok": True, **get_sync_identity(), "live": live_info}
 
 
 @router.post("/rotate-token")
@@ -436,9 +436,16 @@ def sync_run(request: Request, body: RunBody | None = None) -> dict[str, Any]:
     if not websec.client_is_loopback(request) and not websec.session_ok(request):
         raise HTTPException(401, "Login required")
     body = body or RunBody()
+    # Persist peer URL from the form, then open/refresh live WebSocket
+    if body.peer_url:
+        set_peer_url(body.peer_url.strip())
+    live_info = live_sync.connect_now()
     try:
-        return run_sync(body.peer_url)
+        result = run_sync(body.peer_url)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, str(e)) from e
+    result = dict(result or {})
+    result["live"] = live_sync.status() or live_info
+    return result
