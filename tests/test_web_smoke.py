@@ -92,15 +92,27 @@ class ApiSmokeTests(unittest.TestCase):
     def test_pages(self) -> None:
         for path in (
             "/anime",
+            "/discover",
+            "/upcoming",
+            "/downloads",
             "/manga",
+            "/manga/upcoming",
             "/manga/read/00000000-0000-0000-0000-000000000001",
             "/settings",
             "/onboarding",
+            "/login",
             "/watch/1",
         ):
             r = self.client.get(path)
             self.assertEqual(r.status_code, 200, path)
             self.assertIn("text/html", r.headers["content-type"])
+
+    def test_downloads_empty(self) -> None:
+        r = self.client.get("/api/downloads")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["count"], 0)
+        self.assertEqual(body["items"], [])
 
     def test_meta_no_home_leak_shape(self) -> None:
         r = self.client.get("/api/meta")
@@ -111,21 +123,55 @@ class ApiSmokeTests(unittest.TestCase):
         self.assertEqual(self.client.get("/docs").status_code, 404)
         self.assertEqual(self.client.get("/openapi.json").status_code, 404)
 
-    def test_lan_requires_token(self) -> None:
+    def test_lan_requires_login(self) -> None:
         from localfun.web import security as sec
+        from localfun.web import auth as lf_auth
 
-        token = sec.enable_lan_mode("test-token-value-xyz")
-        # Simulate a non-loopback client for middleware + handlers
+        sec.enable_lan_mode()
+        lf_auth.ensure_auth_defaults()
         with mock.patch.object(sec, "client_is_loopback", return_value=False):
-            denied = self.client.get("/api/meta")
-            self.assertEqual(denied.status_code, 401)
-            ok = self.client.get(
-                "/api/meta", headers={"X-LocalFun-Token": token}
-            )
-            self.assertEqual(ok.status_code, 200)
-            body = ok.json()
-            self.assertEqual(body.get("data_dir"), "(local only)")
-            self.assertEqual(body.get("db_path"), "(local only)")
+            with mock.patch.object(sec, "client_ip", return_value="192.168.1.50"):
+                denied = self.client.get("/api/meta")
+                self.assertEqual(denied.status_code, 401)
+                bad = self.client.post(
+                    "/api/auth/login",
+                    json={"username": "user", "password": "wrong"},
+                )
+                self.assertEqual(bad.status_code, 401)
+                ok = self.client.post(
+                    "/api/auth/login",
+                    json={"username": "user", "password": "pwd"},
+                )
+                self.assertEqual(ok.status_code, 200)
+                meta = self.client.get("/api/meta")
+                self.assertEqual(meta.status_code, 200)
+                body = meta.json()
+                self.assertEqual(body.get("data_dir"), "(local only)")
+                self.assertEqual(body.get("db_path"), "(local only)")
+
+    def test_lan_lockout_after_three_fails(self) -> None:
+        from localfun.web import security as sec
+        from localfun.web import auth as lf_auth
+
+        sec.enable_lan_mode()
+        lf_auth.ensure_auth_defaults()
+        lf_auth.unlock_ip("10.9.8.7")
+        with mock.patch.object(sec, "client_is_loopback", return_value=False):
+            with mock.patch.object(sec, "client_ip", return_value="10.9.8.7"):
+                for _ in range(3):
+                    r = self.client.post(
+                        "/api/auth/login",
+                        json={"username": "user", "password": "nope"},
+                    )
+                self.assertEqual(r.status_code, 403)
+                locked = self.client.get("/api/meta")
+                self.assertEqual(locked.status_code, 403)
+                # Cannot login even with correct password while locked
+                still = self.client.post(
+                    "/api/auth/login",
+                    json={"username": "user", "password": "pwd"},
+                )
+                self.assertEqual(still.status_code, 403)
 
     def test_media_delete_404(self) -> None:
         r = self.client.delete("/api/media/999999")

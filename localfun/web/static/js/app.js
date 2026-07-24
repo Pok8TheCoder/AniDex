@@ -45,15 +45,4 @@ function $all(sel, root = document) {
   return [...root.querySelectorAll(sel)];
 }
 
-// Capture LAN access token from ?token= (cookie set by server) and strip from URL
-(function bootstrapToken() {
-  try {
-    const u = new URL(location.href);
-    if (u.searchParams.has("token")) {
-      u.searchParams.delete("token");
-      history.replaceState(null, "", u.pathname + u.search + u.hash);
-    }
-  } catch (_) {}
-})();
-
 window.LF = { api, pollJob, fmtEp, $, $all };

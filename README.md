@@ -11,7 +11,7 @@ Desktop anime & manga tracker. **Local SQLite is source of truth** — your list
 - **MAL sync** — XML import/export always; OAuth PKCE pull/push when connected
 - **MangaDex chapter PDF** — paste a chapter URL from a manga’s detail panel (original quality via existing exporter)
 - **AnimePahe download** — paste play/Kwik URL; browser session bypasses ad player popups
-- **Local folder** hooks on each entry (links downloads to your list)
+- **Upcoming countdowns** — current (+ next) MAL season timers; **For You** ranks titles on your list / genre taste first, with Soonest / Name sorts
 
 ## Setup
 
@@ -36,7 +36,7 @@ Opens on **localhost only** (`127.0.0.1:8787`). Data lives in `%APPDATA%\LocalFu
 python app.py --lan
 ```
 
-Prints a one-time token URL like `http://192.168.x.x:8787/?token=…`. Open that on your phone (same Wi‑Fi). Without the token, remote API/UI access is blocked. Token regenerates each `--lan` start.
+Prints a LAN URL like `http://192.168.x.x:8787/`. On your phone (same Wi‑Fi), open it and log in — default **user** / **pwd** (change in Settings). Passwords are stored with PBKDF2 (never plaintext). Three failed logins locks that IP until you unlock it from Settings on the PC.
 
 ### GitHub / secrets
 

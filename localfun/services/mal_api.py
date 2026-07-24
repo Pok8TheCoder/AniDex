@@ -250,6 +250,113 @@ class MalClient:
             )
         return out
 
+    def get_seasonal_anime(
+        self,
+        year: int,
+        season: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        sort: str = "anime_num_list_users",
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return (nodes, total) for a TV season. Nodes include genres/broadcast."""
+        season = season.lower().strip()
+        if season not in {"winter", "spring", "summer", "fall"}:
+            raise MalApiError(f"Invalid season: {season}")
+        fields = (
+            "id,title,alternative_titles,main_picture,media_type,status,"
+            "num_episodes,mean,synopsis,start_date,end_date,genres,"
+            "start_season,broadcast,num_list_users,rank,popularity"
+        )
+        r = self.session.get(
+            f"{API}/anime/season/{year}/{season}",
+            headers=self._auth_headers(user=False),
+            params={
+                "limit": str(min(500, max(1, limit))),
+                "offset": str(max(0, offset)),
+                "fields": fields,
+                "sort": sort,
+                "nsfw": "true",
+            },
+            timeout=60,
+        )
+        if r.status_code >= 400:
+            raise MalApiError(f"MAL season failed: {r.status_code} {r.text}")
+        data = r.json()
+        nodes = [item.get("node") or {} for item in data.get("data") or []]
+        total = int(data.get("paging", {}).get("previous") and 0 or len(nodes))
+        # MAL season paging doesn't always expose total; keep fetching hint via len
+        return nodes, len(nodes)
+
+    def get_anime_ranking(
+        self,
+        ranking_type: str = "bypopularity",
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """MAL ranking feed. Types: all, airing, upcoming, tv, movie, bypopularity, favorite."""
+        ranking_type = (ranking_type or "bypopularity").strip().lower()
+        allowed = {
+            "all",
+            "airing",
+            "upcoming",
+            "tv",
+            "ova",
+            "movie",
+            "special",
+            "bypopularity",
+            "favorite",
+        }
+        if ranking_type not in allowed:
+            raise MalApiError(f"Invalid ranking type: {ranking_type}")
+        fields = (
+            "id,title,alternative_titles,main_picture,media_type,status,"
+            "num_episodes,mean,synopsis,start_date,genres,"
+            "start_season,num_list_users,rank,popularity"
+        )
+        r = self.session.get(
+            f"{API}/anime/ranking",
+            headers=self._auth_headers(user=False),
+            params={
+                "ranking_type": ranking_type,
+                "limit": str(min(500, max(1, limit))),
+                "offset": str(max(0, offset)),
+                "fields": fields,
+                "nsfw": "true",
+            },
+            timeout=60,
+        )
+        if r.status_code >= 400:
+            raise MalApiError(f"MAL ranking failed: {r.status_code} {r.text}")
+        data = r.json()
+        out: list[dict[str, Any]] = []
+        for item in data.get("data") or []:
+            node = item.get("node") or {}
+            ranking = item.get("ranking") or {}
+            if ranking.get("rank") is not None:
+                node = dict(node)
+                node["_rank"] = ranking.get("rank")
+            out.append(node)
+        return out
+
+    def get_anime(
+        self, mal_id: int, *, fields: str | None = None
+    ) -> dict[str, Any]:
+        fields = fields or (
+            "id,title,alternative_titles,main_picture,media_type,status,"
+            "num_episodes,mean,synopsis,start_date,genres,broadcast,start_season"
+        )
+        r = self.session.get(
+            f"{API}/anime/{mal_id}",
+            headers=self._auth_headers(user=False),
+            params={"fields": fields},
+            timeout=60,
+        )
+        if r.status_code >= 400:
+            raise MalApiError(f"MAL get anime failed: {r.status_code} {r.text}")
+        return r.json()
+
     def get_user_animelist(
         self, username: str = "@me", status: str | None = None
     ) -> list[dict[str, Any]]:

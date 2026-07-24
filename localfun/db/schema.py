@@ -12,7 +12,17 @@ CREATE TABLE IF NOT EXISTS profile (
     onboarded INTEGER NOT NULL DEFAULT 0,
     mal_username TEXT NOT NULL DEFAULT '',
     mal_client_id TEXT NOT NULL DEFAULT '',
+    auth_username TEXT NOT NULL DEFAULT 'user',
+    password_hash TEXT NOT NULL DEFAULT '',
+    session_secret TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS auth_lockout (
+    ip TEXT PRIMARY KEY,
+    fail_count INTEGER NOT NULL DEFAULT 0,
+    locked INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -127,6 +137,14 @@ CREATE TABLE IF NOT EXISTS manga_offline_chapter (
     UNIQUE(user_manga_id, chapter_id)
 );
 
+CREATE TABLE IF NOT EXISTS manga_read_position (
+    user_manga_id INTEGER NOT NULL REFERENCES user_manga(id) ON DELETE CASCADE,
+    chapter_id TEXT NOT NULL,
+    page_index INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_manga_id, chapter_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_user_anime_status ON user_anime(list_status);
 CREATE INDEX IF NOT EXISTS idx_user_manga_status ON user_manga(list_status);
 CREATE INDEX IF NOT EXISTS idx_anime_title ON anime(title);
@@ -193,6 +211,37 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # Indexes that depend on migrated columns must run after ALTER.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_local_media_ua ON local_media(user_anime_id)"
+    )
+
+    profile_cols = _column_names(conn, "profile")
+    for name, decl in (
+        ("auth_username", "TEXT NOT NULL DEFAULT 'user'"),
+        ("password_hash", "TEXT NOT NULL DEFAULT ''"),
+        ("session_secret", "TEXT NOT NULL DEFAULT ''"),
+    ):
+        if name not in profile_cols:
+            conn.execute(f"ALTER TABLE profile ADD COLUMN {name} {decl}")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS auth_lockout (
+            ip TEXT PRIMARY KEY,
+            fail_count INTEGER NOT NULL DEFAULT 0,
+            locked INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS manga_read_position (
+            user_manga_id INTEGER NOT NULL REFERENCES user_manga(id) ON DELETE CASCADE,
+            chapter_id TEXT NOT NULL,
+            page_index INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (user_manga_id, chapter_id)
+        )
+        """
     )
 
 

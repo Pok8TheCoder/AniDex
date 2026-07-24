@@ -841,6 +841,41 @@ class Repository:
         ).fetchall()
         return [self._local_media(r) for r in rows]
 
+    def list_all_media(self) -> list[dict[str, Any]]:
+        """All downloaded anime files with title metadata for the Downloads tab."""
+        rows = self.conn.execute(
+            """
+            SELECT m.*,
+                   a.title AS anime_title,
+                   a.title_english AS anime_title_english,
+                   a.cover_url AS anime_cover_url,
+                   a.mal_id AS anime_mal_id
+            FROM local_media m
+            LEFT JOIN user_anime ua ON ua.id = m.user_anime_id
+            LEFT JOIN anime a ON a.id = ua.anime_id
+            WHERE m.media_type = 'anime' OR m.user_anime_id IS NOT NULL
+            ORDER BY m.created_at DESC, m.id DESC
+            """
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            title = r["anime_title_english"] or r["anime_title"] or r["label"] or "Anime"
+            out.append(
+                {
+                    "id": int(r["id"]),
+                    "user_anime_id": int(r["user_anime_id"]) if r["user_anime_id"] else None,
+                    "episode": float(r["episode"]) if r["episode"] is not None else None,
+                    "label": r["label"] or "",
+                    "bytes": int(r["bytes"] or 0),
+                    "created_at": r["created_at"] or "",
+                    "title": title,
+                    "cover_url": r["anime_cover_url"] or "",
+                    "mal_id": int(r["anime_mal_id"]) if r["anime_mal_id"] else None,
+                    "filename": Path(r["path"]).name if r["path"] else "",
+                }
+            )
+        return out
+
     def get_media_for_episode(
         self,
         user_anime_id: int,
@@ -1029,6 +1064,42 @@ class Repository:
         )
         self.conn.commit()
         return cur.rowcount > 0
+
+    def get_read_position(self, user_manga_id: int, chapter_id: str) -> int | None:
+        row = self.conn.execute(
+            """
+            SELECT page_index FROM manga_read_position
+            WHERE user_manga_id = ? AND chapter_id = ?
+            """,
+            (user_manga_id, chapter_id),
+        ).fetchone()
+        return int(row["page_index"]) if row else None
+
+    def list_read_positions(self, user_manga_id: int) -> dict[str, int]:
+        rows = self.conn.execute(
+            """
+            SELECT chapter_id, page_index FROM manga_read_position
+            WHERE user_manga_id = ?
+            """,
+            (user_manga_id,),
+        ).fetchall()
+        return {str(r["chapter_id"]): int(r["page_index"]) for r in rows}
+
+    def set_read_position(
+        self, user_manga_id: int, chapter_id: str, page_index: int
+    ) -> None:
+        page_index = max(0, int(page_index))
+        self.conn.execute(
+            """
+            INSERT INTO manga_read_position (user_manga_id, chapter_id, page_index, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_manga_id, chapter_id) DO UPDATE SET
+              page_index=excluded.page_index,
+              updated_at=excluded.updated_at
+            """,
+            (user_manga_id, chapter_id, page_index, _now()),
+        )
+        self.conn.commit()
 
     @staticmethod
     def _offline_chapter(r: sqlite3.Row) -> OfflineChapter:

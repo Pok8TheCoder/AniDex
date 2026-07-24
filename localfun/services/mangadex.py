@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -69,6 +70,116 @@ class MangaDexClient:
             raise MangaDexError(f"MangaDex get failed: {r.status_code}")
         return self._parse(r.json()["data"])
 
+    def latest_chapter(
+        self,
+        mangadex_id: str,
+        *,
+        lang: str = "en",
+    ) -> dict[str, Any] | None:
+        """Most recently published chapter for a title (by publishAt)."""
+        params: list[tuple[str, str]] = [
+            ("limit", "1"),
+            ("offset", "0"),
+            ("translatedLanguage[]", lang),
+            ("order[publishAt]", "desc"),
+            ("includeFutureUpdates", "0"),
+            ("contentRating[]", "safe"),
+            ("contentRating[]", "suggestive"),
+            ("contentRating[]", "erotica"),
+            ("contentRating[]", "pornographic"),
+        ]
+        r = self.session.get(
+            f"{API}/manga/{mangadex_id}/feed",
+            params=params,
+            timeout=60,
+        )
+        if r.status_code >= 400:
+            raise MangaDexError(f"MangaDex latest chapter failed: {r.status_code}")
+        items = r.json().get("data") or []
+        if not items:
+            return None
+        item = items[0]
+        attrs = item.get("attributes") or {}
+        return {
+            "id": item.get("id"),
+            "chapter": attrs.get("chapter") or "?",
+            "title": attrs.get("title") or "",
+            "pages": attrs.get("pages"),
+            "translated_language": attrs.get("translatedLanguage"),
+            "publish_at": attrs.get("publishAt"),
+        }
+
+    def recently_updated_manga(
+        self,
+        *,
+        limit: int = 50,
+        lang: str = "en",
+    ) -> list[MangaDexResult]:
+        """Manga with the newest chapter uploads (site-wide)."""
+        params: list[tuple[str, str]] = [
+            ("limit", str(min(100, max(1, limit)))),
+            ("includes[]", "cover_art"),
+            ("order[latestUploadedChapter]", "desc"),
+            ("availableTranslatedLanguage[]", lang),
+            ("contentRating[]", "safe"),
+            ("contentRating[]", "suggestive"),
+            ("contentRating[]", "erotica"),
+        ]
+        r = self.session.get(f"{API}/manga", params=params, timeout=60)
+        if r.status_code >= 400:
+            raise MangaDexError(f"MangaDex recent failed: {r.status_code}")
+        return [self._parse(item) for item in (r.json().get("data") or [])]
+
+    def browse_manga(
+        self,
+        *,
+        order: str = "followedCount",
+        limit: int = 50,
+        lang: str = "en",
+    ) -> list[MangaDexResult]:
+        """Browse manga by followedCount, rating, or latestUploadedChapter."""
+        order = (order or "followedCount").strip()
+        allowed = {"followedCount", "rating", "latestUploadedChapter", "relevance"}
+        if order not in allowed:
+            order = "followedCount"
+        params: list[tuple[str, str]] = [
+            ("limit", str(min(100, max(1, limit)))),
+            ("includes[]", "cover_art"),
+            ("includes[]", "artist"),
+            ("includes[]", "author"),
+            (f"order[{order}]", "desc"),
+            ("availableTranslatedLanguage[]", lang),
+            ("contentRating[]", "safe"),
+            ("contentRating[]", "suggestive"),
+            ("contentRating[]", "erotica"),
+            ("hasAvailableChapters", "true"),
+        ]
+        r = self.session.get(f"{API}/manga", params=params, timeout=60)
+        if r.status_code >= 400:
+            raise MangaDexError(f"MangaDex browse failed: {r.status_code}")
+        return [self._parse(item) for item in (r.json().get("data") or [])]
+
+    def language_chapter_counts(self, mangadex_id: str) -> dict[str, int]:
+        """How many chapters exist per translated language (from manga + feed totals)."""
+        detail = self.get_manga(mangadex_id)
+        langs = list(
+            (detail.raw.get("attributes") or {}).get("availableTranslatedLanguages")
+            or []
+        )
+        if not langs:
+            langs = ["en"]
+        counts: dict[str, int] = {}
+        for lang in langs:
+            try:
+                _chs, total = self.list_chapters(
+                    mangadex_id, lang=lang, limit=1, offset=0
+                )
+                counts[lang] = int(total or 0)
+            except MangaDexError:
+                counts[lang] = 0
+            time.sleep(0.05)
+        return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+
     def list_chapters(
         self,
         mangadex_id: str,
@@ -77,18 +188,26 @@ class MangaDexClient:
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[list[dict[str, Any]], int]:
-        """Return (chapters, total). Chapters sorted ascending by chapter number."""
+        """Chapters for a manga via official ``GET /manga/{id}/feed``.
+
+        See https://api.mangadex.org/docs/ — Manga feed / Chapter list.
+        Max page size is 100; use offset to paginate. ``total`` is the full count.
+        """
         params: list[tuple[str, str]] = [
             ("limit", str(min(100, max(1, limit)))),
             ("offset", str(max(0, offset))),
             ("translatedLanguage[]", lang),
+            # Numeric-ish chapter order; publishAt as secondary for extras
             ("order[chapter]", "asc"),
             ("order[publishAt]", "asc"),
             ("includeFutureUpdates", "0"),
+            ("includeEmptyPages", "0"),
+            ("includeExternalUrl", "0"),
             ("contentRating[]", "safe"),
             ("contentRating[]", "suggestive"),
             ("contentRating[]", "erotica"),
             ("contentRating[]", "pornographic"),
+            ("includes[]", "scanlation_group"),
         ]
         r = self.session.get(
             f"{API}/manga/{mangadex_id}/feed",
@@ -102,6 +221,12 @@ class MangaDexClient:
         out: list[dict[str, Any]] = []
         for item in data.get("data") or []:
             attrs = item.get("attributes") or {}
+            groups = []
+            for rel in item.get("relationships") or []:
+                if rel.get("type") == "scanlation_group":
+                    name = (rel.get("attributes") or {}).get("name")
+                    if name:
+                        groups.append(name)
             out.append(
                 {
                     "id": item.get("id"),
@@ -111,6 +236,7 @@ class MangaDexClient:
                     "volume": attrs.get("volume"),
                     "translated_language": attrs.get("translatedLanguage"),
                     "publish_at": attrs.get("publishAt"),
+                    "groups": groups,
                 }
             )
         return out, total

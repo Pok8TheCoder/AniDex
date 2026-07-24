@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+{% block title %}Discover — LocalFun{% endblock %}
+{% block content %}
+<div class="row" style="margin-bottom:14px;flex-wrap:wrap;gap:10px;align-items:flex-end">
+  <div>
+    <div class="section" style="margin:0">Discover</div>
+    <div class="muted" id="taste-lbl">Personalized picks from MAL + your library</div>
+  </div>
+  <div style="flex:1"></div>
+  <a class="btn chip" href="/upcoming">Upcoming</a>
+  <a class="btn" href="/anime">My list</a>
+  <button class="btn primary" id="btn-refresh" type="button">Refresh</button>
+</div>
+<p class="status" id="status">Loading Discover…</p>
+
+<section class="discover-rail" id="rail-for-you">
+  <div class="discover-rail-head">
+    <h2>For You</h2>
+    <span class="muted">Genre + fuzzy match vs your list</span>
+  </div>
+  <div class="discover-scroll" id="for-you"></div>
+</section>
+
+<section class="discover-rail" id="rail-season">
+  <div class="discover-rail-head">
+    <h2>This season</h2>
+    <span class="muted" id="season-lbl"></span>
+  </div>
+  <div class="discover-scroll" id="season"></div>
+</section>
+
+<section class="discover-rail">
+  <div class="discover-rail-head">
+    <h2>Popular</h2>
+    <span class="muted">MAL by popularity</span>
+  </div>
+  <div class="discover-scroll" id="popular"></div>
+</section>
+
+<section class="discover-rail">
+  <div class="discover-rail-head">
+    <h2>Highly rated</h2>
+    <span class="muted">Top MAL scores</span>
+  </div>
+  <div class="discover-scroll" id="top-rated"></div>
+</section>
+
+<div class="modal-backdrop" id="add-modal">
+  <div class="modal">
+    <h3 style="margin-top:0" id="add-title">Add to list</h3>
+    <p class="muted" id="add-meta"></p>
+    <p class="muted" id="add-syn" style="max-height:100px;overflow:auto"></p>
+    <div class="field"><label>Add as</label><select id="add-status"></select></div>
+    <div class="row">
+      <button class="btn primary" id="add-go">Add</button>
+      <button class="btn ghost" id="add-close">Close</button>
+    </div>
+    <p class="status" id="add-msg"></p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const STATUSES = [
+  ["plan_to_watch","Plan to Watch"],["watching","Watching"],
+  ["on_hold","On Hold"],["completed","Completed"],["dropped","Dropped"]
+];
+const addStatus = $("#add-status");
+STATUSES.forEach(([v,l]) => addStatus.insertAdjacentHTML("beforeend", `<option value="${v}">${l}</option>`));
+let pending = null;
+
+function esc(s) {
+  return String(s || "").replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
+}
+
+function cardHtml(it) {
+  const score = it.mean_score != null ? Number(it.mean_score).toFixed(2) : "—";
+  const badge = it.in_library
+    ? `<span class="discover-badge">${esc((it.list_status || "listed").replaceAll("_"," "))}</span>`
+    : (it.reason ? `<span class="discover-badge soft">${esc(it.reason)}</span>` : "");
+  const genres = (it.genres || []).slice(0, 3).join(" · ");
+  return `
+    <button type="button" class="discover-card" data-mal="${it.mal_id}">
+      <img src="${esc(it.cover_url || "")}" alt="" loading="lazy" onerror="this.style.opacity=.25" />
+      <div class="discover-card-body">
+        <div class="title">${esc(it.display_title)}</div>
+        <div class="sub">${score} · ${(it.media_type || "").toUpperCase() || "—"}</div>
+        ${badge}
+        ${genres ? `<div class="sub genres">${esc(genres)}</div>` : ""}
+      </div>
+    </button>`;
+}
+
+function fillRail(id, items, emptyMsg) {
+  const host = $(`#${id}`);
+  if (!items || !items.length) {
+    host.innerHTML = `<p class="muted discover-empty">${esc(emptyMsg)}</p>`;
+    return;
+  }
+  host.innerHTML = items.map(cardHtml).join("");
+  $all(".discover-card", host).forEach((el, i) => {
+    el.onclick = () => openAdd(items[i]);
+  });
+}
+
+function openAdd(it) {
+  pending = it;
+  $("#add-title").textContent = it.display_title;
+  $("#add-meta").textContent = [
+    it.media_type, it.airing_status,
+    it.mean_score != null ? `MAL ${Number(it.mean_score).toFixed(2)}` : null,
+    (it.genres || []).slice(0, 5).join(", "),
+  ].filter(Boolean).join(" · ");
+  $("#add-syn").textContent = it.synopsis || "";
+  if (it.in_library) {
+    $("#add-msg").textContent = `Already on your list (${(it.list_status || "").replaceAll("_"," ")}) — open Anime to manage`;
+    $("#add-go").disabled = true;
+  } else {
+    $("#add-msg").textContent = "";
+    $("#add-go").disabled = false;
+  }
+  $("#add-modal").classList.add("open");
+}
+
+$("#add-close").onclick = () => $("#add-modal").classList.remove("open");
+$("#add-modal").onclick = (e) => { if (e.target.id === "add-modal") $("#add-modal").classList.remove("open"); };
+
+$("#add-go").onclick = async () => {
+  if (!pending) return;
+  $("#add-msg").textContent = "Adding…";
+  try {
+    await api("/api/anime/add", {
+      method: "POST",
+      body: JSON.stringify({
+        mal_id: pending.mal_id,
+        title: pending.title,
+        title_english: pending.title_english,
+        media_type: pending.media_type,
+        airing_status: pending.airing_status,
+        episodes: pending.episodes,
+        mean_score: pending.mean_score,
+        cover_url: pending.cover_url,
+        synopsis: pending.synopsis,
+        list_status: addStatus.value,
+      }),
+    });
+    $("#add-msg").textContent = "Added — open Anime tab to manage";
+    pending.in_library = true;
+    pending.list_status = addStatus.value;
+    $("#add-go").disabled = true;
+    setTimeout(() => $("#add-modal").classList.remove("open"), 700);
+  } catch (e) {
+    $("#add-msg").textContent = e.message;
+  }
+};
+
+async function load() {
+  const status = $("#status");
+  status.textContent = "Loading Discover…";
+  try {
+    const data = await api("/api/discover");
+    const genres = (data.top_genres || []).map(g => g[0]).slice(0, 5).join(" · ");
+    $("#taste-lbl").textContent = genres
+      ? `Your taste: ${genres}`
+      : (data.library_count ? "Building taste from your list…" : "Add anime to your list to personalize For You");
+    const s = data.season || {};
+    $("#season-lbl").textContent = s.season
+      ? `${String(s.season).replace(/^./, c => c.toUpperCase())} ${s.year || ""}`
+      : "";
+    fillRail("for-you", data.for_you, "No fresh picks yet — add titles to Anime or check MAL Client ID.");
+    fillRail("season", data.season_picks, "No season titles loaded.");
+    fillRail("popular", data.popular, "Could not load popular rankings.");
+    fillRail("top-rated", data.top_rated, "Could not load top-rated rankings.");
+    if (data.errors && data.errors.length) {
+      status.textContent = data.errors[0];
+    } else {
+      status.textContent = "";
+    }
+  } catch (e) {
+    status.textContent = e.message;
+  }
+}
+
+$("#btn-refresh").onclick = load;
+load();
+</script>
+{% endblock %}

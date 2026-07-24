@@ -1,48 +1,58 @@
 """Local-network access control for LocalFun.
 
 Loopback (127.0.0.1 / ::1) is always allowed.
-Non-loopback clients are only allowed when LAN mode is enabled and they
-present the access token (cookie, header, or ?token= query once).
+Non-loopback clients need LAN mode + a logged-in session cookie.
+Failed logins lock the client IP after 3 attempts.
 """
 
 from __future__ import annotations
 
-import ipaddress
 import os
-import secrets
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-COOKIE = "lf_token"
-HEADER = "X-LocalFun-Token"
+from localfun.web import auth as lf_auth
+
+COOKIE = lf_auth.COOKIE
+HEADER = lf_auth.HEADER
 
 _lan_mode = False
-_token: str | None = None
+
+# Paths reachable without a session (remote clients still need LAN mode)
+_PUBLIC_PREFIXES = (
+    "/login",
+    "/static/",
+    "/api/auth/login",
+    "/api/auth/status",
+)
+_PUBLIC_EXACT = {"/favicon.ico"}
 
 
-def enable_lan_mode(token: str | None = None) -> str:
-    """Allow remote LAN clients that present the returned token."""
-    global _lan_mode, _token
+def enable_lan_mode() -> None:
+    """Allow remote LAN clients that log in with username/password."""
+    global _lan_mode
     _lan_mode = True
-    _token = token or os.environ.get("LOCALFUN_TOKEN") or secrets.token_urlsafe(24)
     os.environ["LOCALFUN_LAN"] = "1"
-    os.environ["LOCALFUN_TOKEN"] = _token
-    return _token
+
+
+def sync_lan_from_env() -> None:
+    if os.environ.get("LOCALFUN_LAN") == "1":
+        enable_lan_mode()
 
 
 def lan_enabled() -> bool:
+    sync_lan_from_env()
     return _lan_mode or os.environ.get("LOCALFUN_LAN") == "1"
 
 
-def access_token() -> str | None:
-    return _token or os.environ.get("LOCALFUN_TOKEN")
-
-
 def is_loopback_host(host: str | None) -> bool:
+    import ipaddress
+
     if not host:
         return False
     host = host.split("%", 1)[0].strip("[]")
@@ -59,23 +69,17 @@ def client_is_loopback(request: Request) -> bool:
     return is_loopback_host(host)
 
 
-def request_token(request: Request) -> str | None:
-    return (
-        request.cookies.get(COOKIE)
-        or request.headers.get(HEADER)
-        or request.query_params.get("token")
-    )
+def client_ip(request: Request) -> str:
+    host = request.client.host if request.client else ""
+    return host or ""
 
 
-def token_ok(request: Request) -> bool:
-    expected = access_token()
-    got = request_token(request)
-    if not expected or not got:
-        return False
-    try:
-        return secrets.compare_digest(got, expected)
-    except (TypeError, ValueError):
-        return False
+def request_session(request: Request) -> str | None:
+    return request.cookies.get(COOKIE) or request.headers.get(HEADER)
+
+
+def session_ok(request: Request) -> bool:
+    return lf_auth.session_username(request_session(request)) is not None
 
 
 def redact_path(path: str | Path | None) -> str:
@@ -94,53 +98,89 @@ def redact_job_result(result: Any) -> Any:
     return result
 
 
-_DENY_HTML = """<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>LocalFun</title>
-<style>body{font-family:system-ui;background:#141210;color:#f0e6d8;padding:40px;max-width:520px;margin:auto}
-code{background:#2a2420;padding:2px 6px;border-radius:4px}</style></head>
+def _is_public(path: str) -> bool:
+    if path in _PUBLIC_EXACT:
+        return True
+    return any(path == p or path.startswith(p) for p in _PUBLIC_PREFIXES)
+
+
+def _locked_html(ip: str) -> str:
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LocalFun — locked</title>
+<style>
+body{{font-family:system-ui,sans-serif;background:#141210;color:#f0e6d8;padding:28px;max-width:520px;margin:auto;line-height:1.45}}
+code{{background:#2a2420;padding:2px 6px;border-radius:4px}}
+</style></head>
+<body>
+<h1>IP locked</h1>
+<p>Too many failed login attempts from <code>{ip}</code>.</p>
+<p>On the PC running LocalFun, open Settings → Login and unlock this IP
+(or restart after clearing lockouts).</p>
+</body></html>
+"""
+
+
+def _deny_lan_html() -> str:
+    return """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LocalFun</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#141210;color:#f0e6d8;padding:28px;max-width:520px;margin:auto;line-height:1.45}
+code{background:#2a2420;padding:2px 6px;border-radius:4px}
+</style></head>
 <body>
 <h1>Access blocked</h1>
-<p>This LocalFun instance only accepts localhost, or a one-time LAN link with an access token.</p>
-<p>On the PC that runs the app, start with <code>python app.py --lan</code> and open the printed phone URL.</p>
+<p>This LocalFun instance only accepts localhost.</p>
+<p>On the PC, restart with <code>python app.py --lan</code> and open the printed phone URL, then log in.</p>
 </body></html>
 """
 
 
 class LocalAccessMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
+        path = request.url.path
+        ip = client_ip(request)
+
         if client_is_loopback(request):
             return await call_next(request)
 
-        # Remote client
         if not lan_enabled():
-            if request.url.path.startswith("/api/"):
+            if path.startswith("/api/"):
                 return JSONResponse(
                     {"detail": "Remote access disabled. Start with --lan."},
                     status_code=403,
                 )
-            return HTMLResponse(_DENY_HTML, status_code=403)
+            return HTMLResponse(_deny_lan_html(), status_code=403)
 
-        if not token_ok(request):
-            if request.url.path.startswith("/api/"):
+        # Locked IPs cannot reach anything except static assets for the locked page
+        if lf_auth.is_ip_locked(ip) and not path.startswith("/static/"):
+            if path.startswith("/api/"):
                 return JSONResponse(
                     {
-                        "detail": "Unauthorized. Open the token URL printed on the PC console."
+                        "detail": "IP locked after too many failed logins. "
+                        "Unlock from Settings on the PC."
                     },
-                    status_code=401,
+                    status_code=403,
                 )
-            return HTMLResponse(_DENY_HTML, status_code=401)
+            return HTMLResponse(_locked_html(ip), status_code=403)
 
-        response = await call_next(request)
-        # Persist token after first ?token= visit so subsequent asset/API calls work
-        qtok = request.query_params.get("token")
-        expected = access_token()
-        if qtok and expected and secrets.compare_digest(qtok, expected):
-            response.set_cookie(
-                COOKIE,
-                expected,
-                max_age=7 * 24 * 3600,
-                httponly=False,
-                samesite="lax",
-                path="/",
+        if _is_public(path):
+            return await call_next(request)
+
+        if session_ok(request):
+            return await call_next(request)
+
+        if path.startswith("/api/"):
+            return JSONResponse(
+                {"detail": "Login required. Open /login on this device."},
+                status_code=401,
             )
-        return response
+
+        nxt = path
+        if request.url.query:
+            nxt = f"{path}?{request.url.query}"
+        return RedirectResponse(
+            f"/login?next={quote(nxt or '/', safe='')}",
+            status_code=302,
+        )

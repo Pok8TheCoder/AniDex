@@ -14,6 +14,20 @@ HOST = "127.0.0.1"
 PORT = 8787
 
 
+def _ip_rank(ip: str) -> tuple[int, str]:
+    """Prefer home Wi‑Fi over Tailscale / Hyper‑V / WSL virtual adapters."""
+    if ip.startswith("192.168."):
+        return (0, ip)
+    if ip.startswith("10."):
+        return (1, ip)
+    # CGNAT / Tailscale often 100.x; Hyper-V/WSL often 172.16–31.x
+    if ip.startswith("100."):
+        return (3, ip)
+    if ip.startswith("172."):
+        return (4, ip)
+    return (2, ip)
+
+
 def _lan_ips() -> list[str]:
     ips: list[str] = []
     try:
@@ -34,7 +48,8 @@ def _lan_ips() -> list[str]:
             ips.insert(0, ip)
     except OSError:
         pass
-    return ips
+    return sorted(ips, key=_ip_rank)
+
 
 
 def main() -> int:
@@ -48,17 +63,18 @@ def main() -> int:
     parser.add_argument(
         "--lan",
         action="store_true",
-        help="Bind 0.0.0.0 and require an access token for phones on your Wi‑Fi",
+        help="Bind 0.0.0.0 and require login for phones on your Wi‑Fi",
     )
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
 
     host = "0.0.0.0" if args.lan else args.host
-    token = None
+    lan = False
     if args.lan or host in ("0.0.0.0", "::"):
         from localfun.web.security import enable_lan_mode
 
-        token = enable_lan_mode()
+        enable_lan_mode()
+        lan = True
         host = "0.0.0.0" if host == "::" else host
 
     local_url = f"http://127.0.0.1:{args.port}/"
@@ -66,12 +82,15 @@ def main() -> int:
 
     print(f"LocalFun listening on http://{host}:{args.port}/")
     print(f"  This PC: {local_url}")
-    if token:
-        print("  LAN mode ON — remote devices need the token link:")
-        for ip in _lan_ips() or ["<your-lan-ip>"]:
-            print(f"  Phone:  http://{ip}:{args.port}/?token={token}")
-        print("  Keep this token private (same Wi‑Fi only; regenerates each --lan start).")
-        # Prefer first LAN IP for console clarity; browser still opens localhost
+    if lan:
+        ips = _lan_ips() or ["<your-lan-ip>"]
+        print("  LAN mode ON — log in on your phone (default user / pwd):")
+        print(f"  >>>  http://{ips[0]}:{args.port}/")
+        if len(ips) > 1:
+            print("  Other adapters (usually ignore Hyper-V / Tailscale unless needed):")
+            for ip in ips[1:]:
+                print(f"       http://{ip}:{args.port}/")
+        print("  Change username/password in Settings. 3 failed tries locks that IP.")
     else:
         print("  Remote/LAN access is blocked (use --lan to allow phones).")
 

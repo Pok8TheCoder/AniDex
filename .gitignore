@@ -43,6 +43,7 @@ playwright/
 **/stream_cache/
 **/manga_offline/
 **/covers/
+**/cache/
 *.log
 
 # Editor / build

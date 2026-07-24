@@ -40,16 +40,24 @@ const lang = params.get("lang") || "en";
 if (backId) $("#btn-back").href = `/manga?open=${encodeURIComponent(backId)}`;
 
 const MODE_KEY = "localfun.reader.mode";
+const CACHE_RADIUS = 5;
+const CACHE_PREFIX = "lf-manga-ch-";
 const modeSel = $("#mode");
 const qualitySel = $("#quality");
 modeSel.value = localStorage.getItem(MODE_KEY) === "page" ? "page" : "continuous";
 
 let pageUrls = [];
+/** Resolved display URLs (blob: from cache when available) */
+let displayUrls = [];
 let pageIndex = 0;
 let fullscreen = false;
 let pushedFsState = false;
 let nextChapterId = null;
 let prevChapterId = null;
+let saveTimer = null;
+const pageCache = new Map();
+let pageObserver = null;
+let chapterCacheName = CACHE_PREFIX + CHAPTER_ID;
 
 function setModeUI() {
   const continuous = modeSel.value === "continuous";
@@ -76,20 +84,144 @@ function chapterUrl(id) {
 
 function goChapter(id) {
   if (!id) return;
+  clearPageCache();
+  savePosition(true);
   location.href = chapterUrl(id);
+}
+
+function clearPageCache() {
+  pageCache.forEach((img) => { try { img.src = ""; } catch (_) {} });
+  pageCache.clear();
+  if (pageObserver) { pageObserver.disconnect(); pageObserver = null; }
+  displayUrls.forEach((u) => {
+    if (u && String(u).startsWith("blob:")) {
+      try { URL.revokeObjectURL(u); } catch (_) {}
+    }
+  });
+  displayUrls = [];
+}
+
+function cacheWindow(center) {
+  if (!pageUrls.length) return { lo: 0, hi: -1 };
+  const c = Math.max(0, Math.min(center, pageUrls.length - 1));
+  return {
+    lo: Math.max(0, c - CACHE_RADIUS),
+    hi: Math.min(pageUrls.length - 1, c + CACHE_RADIUS),
+  };
+}
+
+function pageSrc(i) {
+  return displayUrls[i] || pageUrls[i] || "";
+}
+
+function warmAround(center) {
+  const { lo, hi } = cacheWindow(center);
+  for (const [i, img] of [...pageCache.entries()]) {
+    if (i < lo || i > hi) {
+      try { img.src = ""; } catch (_) {}
+      pageCache.delete(i);
+    }
+  }
+  for (let i = lo; i <= hi; i++) {
+    const src = pageSrc(i);
+    if (!src) continue;
+    let img = pageCache.get(i);
+    if (!img) {
+      img = new Image();
+      img.decoding = "async";
+      pageCache.set(i, img);
+    }
+    if (img.dataset.src !== src) {
+      img.dataset.src = src;
+      img.src = src;
+    }
+  }
+  syncContinuousDom(lo, hi);
+}
+
+function bindPageImg(img, index, src) {
+  img.dataset.index = String(index);
+  img.dataset.src = src;
+  img.alt = `Page ${index + 1}`;
+  img.decoding = "async";
+  img.classList.add("is-placeholder");
+  img.onload = () => {
+    img.classList.remove("is-placeholder");
+    if (img.naturalHeight) {
+      img.style.minHeight = "";
+      img.dataset.loadedH = String(img.naturalHeight);
+    }
+  };
+}
+
+function unloadDomImg(img) {
+  if (img.dataset.loadedH) img.style.minHeight = `${img.dataset.loadedH}px`;
+  img.classList.add("is-placeholder");
+  img.removeAttribute("src");
+}
+
+function loadDomImg(img, src) {
+  if (img.getAttribute("src") === src) return;
+  img.src = src;
+}
+
+function syncContinuousDom(lo, hi) {
+  if (modeSel.value !== "continuous") return;
+  $all("img.reader-page", $("#pages")).forEach((img) => {
+    const i = Number(img.dataset.index);
+    const src = pageSrc(i);
+    if (i >= lo && i <= hi && src) loadDomImg(img, src);
+    else if (img.hasAttribute("src")) unloadDomImg(img);
+  });
+}
+
+function observeContinuousPages() {
+  if (pageObserver) pageObserver.disconnect();
+  const imgs = $all("img.reader-page", $("#pages"));
+  if (!imgs.length || !("IntersectionObserver" in window)) {
+    warmAround(0);
+    return;
+  }
+  let bestIdx = pageIndex || 0;
+  pageObserver = new IntersectionObserver(
+    (entries) => {
+      let topRatio = 0;
+      let topIdx = bestIdx;
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        const i = Number(e.target.dataset.index);
+        if (e.intersectionRatio >= topRatio) {
+          topRatio = e.intersectionRatio;
+          topIdx = i;
+        }
+      }
+      if (topRatio > 0 && topIdx !== bestIdx) {
+        bestIdx = topIdx;
+        pageIndex = bestIdx;
+        warmAround(bestIdx);
+        scheduleSavePosition();
+      }
+    },
+    { root: null, rootMargin: "200% 0px", threshold: [0, 0.15, 0.35, 0.55, 0.75] }
+  );
+  imgs.forEach((img) => pageObserver.observe(img));
+  warmAround(pageIndex || 0);
 }
 
 function renderContinuous() {
   const host = $("#pages");
   host.innerHTML = "";
-  pageUrls.forEach((src, i) => {
+  pageUrls.forEach((_, i) => {
     const img = document.createElement("img");
     img.className = "reader-page";
-    img.loading = i < 3 ? "eager" : "lazy";
-    img.decoding = "async";
-    img.alt = `Page ${i + 1}`;
-    img.src = src;
+    bindPageImg(img, i, pageSrc(i));
     host.appendChild(img);
+  });
+  observeContinuousPages();
+  // Scroll to resumed page
+  requestAnimationFrame(() => {
+    const el = host.querySelector(`img[data-index="${pageIndex}"]`);
+    if (el && pageIndex > 0) el.scrollIntoView({ block: "start" });
   });
 }
 
@@ -98,24 +230,21 @@ function renderPage() {
   host.innerHTML = "";
   if (!pageUrls.length) return;
   pageIndex = Math.max(0, Math.min(pageIndex, pageUrls.length - 1));
+  warmAround(pageIndex);
   const img = document.createElement("img");
   img.className = "reader-page reader-page-single";
-  img.decoding = "async";
-  img.alt = `Page ${pageIndex + 1}`;
-  img.src = pageUrls[pageIndex];
+  const src = pageSrc(pageIndex);
+  bindPageImg(img, pageIndex, src);
+  img.src = src;
+  img.classList.toggle("is-placeholder", !img.complete);
   host.appendChild(img);
-  [pageIndex - 1, pageIndex + 1].forEach((i) => {
-    if (i >= 0 && i < pageUrls.length) {
-      const pre = new Image();
-      pre.src = pageUrls[i];
-    }
-  });
   if (!fullscreen) {
     let t = `${pageIndex + 1} / ${pageUrls.length}`;
     if (pageIndex >= pageUrls.length - 1 && nextChapterId) t += " · next →";
     $("#reader-status").textContent = t;
   }
   window.scrollTo({ top: 0, behavior: "auto" });
+  scheduleSavePosition();
 }
 
 function applyRender() {
@@ -125,6 +254,31 @@ function applyRender() {
     renderContinuous();
     if (pageUrls.length) $("#reader-status").textContent = `${pageUrls.length} pages`;
   }
+}
+
+function scheduleSavePosition() {
+  if (!backId) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => savePosition(false), 400);
+}
+
+async function savePosition(sync) {
+  if (!backId) return;
+  const body = JSON.stringify({ page_index: pageIndex });
+  const url = `/api/manga/${backId}/chapters/${CHAPTER_ID}/position`;
+  try {
+    if (sync && navigator.sendBeacon) {
+      const blob = new Blob([body], { type: "application/json" });
+      // sendBeacon can't PUT easily — fall through to fetch keepalive
+    }
+    await fetch(url, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body,
+      credentials: "same-origin",
+      keepalive: true,
+    });
+  } catch (_) {}
 }
 
 function prevPage() {
@@ -170,9 +324,7 @@ function exitFullscreen({ fromPopstate = false } = {}) {
   else if (pageUrls.length) $("#reader-status").textContent = `${pageUrls.length} pages`;
   const needBack = pushedFsState && !fromPopstate;
   pushedFsState = false;
-  if (document.fullscreenElement) {
-    document.exitFullscreen().catch(() => {});
-  }
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
   if (needBack) history.back();
 }
 
@@ -192,10 +344,62 @@ async function loadAdjacent() {
   }
 }
 
+async function pruneOtherChapterCaches() {
+  if (!("caches" in window)) return;
+  try {
+    const keys = await caches.keys();
+    await Promise.all(
+      keys
+        .filter((k) => k.startsWith(CACHE_PREFIX) && k !== chapterCacheName)
+        .map((k) => caches.delete(k))
+    );
+  } catch (_) {}
+}
+
+async function cacheEntireChapter(urls) {
+  if (!("caches" in window) || !urls.length) return;
+  await pruneOtherChapterCaches();
+  const cache = await caches.open(chapterCacheName);
+  let done = 0;
+  const status = $("#reader-status");
+  for (const url of urls) {
+    try {
+      const hit = await cache.match(url);
+      if (!hit) {
+        const res = await fetch(url, { credentials: "same-origin" });
+        if (res.ok) await cache.put(url, res.clone());
+      }
+    } catch (_) {}
+    done += 1;
+    if (!fullscreen && modeSel.value === "continuous") {
+      status.textContent = `Caching chapter ${done}/${urls.length}…`;
+    }
+  }
+  // Build blob URLs for offline-friendly display
+  displayUrls = [];
+  for (let i = 0; i < urls.length; i++) {
+    try {
+      const res = await cache.match(urls[i]);
+      if (res) {
+        displayUrls[i] = URL.createObjectURL(await res.blob());
+      } else {
+        displayUrls[i] = urls[i];
+      }
+    } catch (_) {
+      displayUrls[i] = urls[i];
+    }
+  }
+  // Refresh visible images with cached blobs
+  warmAround(pageIndex);
+  if (modeSel.value === "page") renderPage();
+  else if (!fullscreen) status.textContent = `${urls.length} pages · cached for offline`;
+}
+
 async function load() {
   const quality = qualitySel.value;
   const status = $("#reader-status");
   status.textContent = "Loading pages…";
+  clearPageCache();
   pageUrls = [];
   pageIndex = 0;
   $("#pages").innerHTML = "";
@@ -206,8 +410,20 @@ async function load() {
     $("#reader-title").textContent = label;
     document.title = label + " — LocalFun";
     pageUrls = data.pages || [];
-    status.textContent = `${pageUrls.length} pages`;
+    displayUrls = pageUrls.slice();
+
+    if (backId) {
+      try {
+        const pos = await api(`/api/manga/${backId}/chapters/${CHAPTER_ID}/position`);
+        if (pos.saved && pos.page_index != null) {
+          pageIndex = Math.max(0, Math.min(Number(pos.page_index) || 0, pageUrls.length - 1));
+        }
+      } catch (_) {}
+    }
+
+    status.textContent = `${pageUrls.length} pages` + (pageIndex ? ` · resume p.${pageIndex + 1}` : "");
     applyRender();
+
     if (backId && data.chapter && !Number.isNaN(parseFloat(data.chapter))) {
       const ch = Math.floor(parseFloat(data.chapter));
       api(`/api/manga/${backId}`, {
@@ -216,6 +432,8 @@ async function load() {
       }).catch(() => {});
     }
     loadAdjacent();
+    // Full-chapter cache (does not replace permanent offline downloads)
+    cacheEntireChapter(pageUrls).catch(() => {});
   } catch (e) {
     status.textContent = e.message;
   }
@@ -223,6 +441,8 @@ async function load() {
 
 modeSel.onchange = () => {
   localStorage.setItem(MODE_KEY, modeSel.value);
+  clearPageCache();
+  displayUrls = displayUrls.length ? displayUrls : pageUrls.slice();
   applyRender();
 };
 qualitySel.onchange = load;
@@ -249,11 +469,12 @@ document.addEventListener("keydown", (ev) => {
 window.addEventListener("popstate", () => {
   if (fullscreen) exitFullscreen({ fromPopstate: true });
 });
-
 document.addEventListener("fullscreenchange", () => {
-  if (!document.fullscreenElement && fullscreen) {
-    exitFullscreen({ fromPopstate: true });
-  }
+  if (!document.fullscreenElement && fullscreen) exitFullscreen({ fromPopstate: true });
+});
+window.addEventListener("pagehide", () => {
+  savePosition(true);
+  clearPageCache();
 });
 
 load();

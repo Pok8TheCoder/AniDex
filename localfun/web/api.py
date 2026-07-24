@@ -156,6 +156,145 @@ class OfflineChapterBody(BaseModel):
 
 # ---- profile / meta ----
 
+class LoginBody(BaseModel):
+    username: str
+    password: str
+
+
+class CredentialsBody(BaseModel):
+    username: str | None = None
+    current_password: str = ""
+    new_password: str | None = None
+
+
+class UnlockBody(BaseModel):
+    ip: str | None = None
+
+
+@router.get("/auth/status")
+def auth_status(request: Request) -> dict[str, Any]:
+    from localfun.web import auth as lf_auth
+
+    user = lf_auth.session_username(websec.request_session(request))
+    loopback = websec.client_is_loopback(request)
+    out: dict[str, Any] = {
+        "authenticated": bool(user) or loopback,
+        "username": user or (lf_auth.get_auth_username() if loopback else None),
+        "lan_mode": websec.lan_enabled(),
+        "loopback": loopback,
+        "max_attempts": lf_auth.MAX_ATTEMPTS,
+    }
+    if loopback:
+        out["lockouts"] = lf_auth.list_lockouts()
+        out["auth_username"] = lf_auth.get_auth_username()
+    return out
+
+
+@router.post("/auth/login")
+def auth_login(request: Request, body: LoginBody) -> dict[str, Any]:
+    from localfun.web import auth as lf_auth
+    from fastapi.responses import JSONResponse
+
+    ip = websec.client_ip(request)
+    if lf_auth.is_ip_locked(ip):
+        raise HTTPException(
+            403,
+            "IP locked after too many failed logins. Unlock from Settings on the PC.",
+        )
+    if not lf_auth.verify_credentials(body.username, body.password):
+        status = lf_auth.record_login_failure(ip)
+        if status["locked"]:
+            raise HTTPException(
+                403,
+                "Too many failed attempts — this IP is now locked. "
+                "Unlock from Settings on the PC.",
+            )
+        raise HTTPException(
+            401,
+            f"Invalid username or password. "
+            f"{status['remaining']} attempt(s) left before this IP is locked.",
+        )
+    lf_auth.clear_login_failures(ip)
+    token = lf_auth.issue_session(lf_auth.get_auth_username())
+    resp = JSONResponse({"ok": True, "username": lf_auth.get_auth_username()})
+    resp.set_cookie(
+        lf_auth.COOKIE,
+        token,
+        max_age=lf_auth.SESSION_DAYS * 24 * 3600,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+    return resp
+
+
+@router.post("/auth/logout")
+def auth_logout() -> dict[str, Any]:
+    from localfun.web import auth as lf_auth
+    from fastapi.responses import JSONResponse
+
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(lf_auth.COOKIE, path="/")
+    return resp
+
+
+@router.post("/auth/credentials")
+def auth_credentials(request: Request, body: CredentialsBody) -> dict[str, Any]:
+    from localfun.web import auth as lf_auth
+    from fastapi.responses import JSONResponse
+
+    loopback = websec.client_is_loopback(request)
+    session_user = lf_auth.session_username(websec.request_session(request))
+    if not loopback and not session_user:
+        raise HTTPException(401, "Login required")
+
+    if not loopback:
+        if not lf_auth.verify_credentials(
+            lf_auth.get_auth_username(), body.current_password
+        ):
+            raise HTTPException(401, "Current password is incorrect")
+    elif body.current_password and not lf_auth.verify_credentials(
+        lf_auth.get_auth_username(), body.current_password
+    ):
+        raise HTTPException(401, "Current password is incorrect")
+
+    if body.new_password is None and body.username is None:
+        raise HTTPException(400, "Nothing to update")
+    if body.new_password is not None and len(body.new_password) < 1:
+        raise HTTPException(400, "New password cannot be empty")
+
+    try:
+        new_user = lf_auth.update_credentials(
+            username=body.username,
+            password=body.new_password,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+    # Re-issue session so the client stays logged in after secret rotation
+    token = lf_auth.issue_session(new_user)
+    resp = JSONResponse({"ok": True, "username": new_user})
+    resp.set_cookie(
+        lf_auth.COOKIE,
+        token,
+        max_age=lf_auth.SESSION_DAYS * 24 * 3600,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+    return resp
+
+
+@router.post("/auth/unlock")
+def auth_unlock(request: Request, body: UnlockBody) -> dict[str, Any]:
+    from localfun.web import auth as lf_auth
+
+    if not websec.client_is_loopback(request):
+        raise HTTPException(403, "Unlock only allowed from this PC")
+    n = lf_auth.unlock_ip(body.ip)
+    return {"ok": True, "cleared": n, "lockouts": lf_auth.list_lockouts()}
+
+
 @router.get("/meta")
 def meta(request: Request) -> dict[str, Any]:
     # Never expose full home-directory paths to LAN clients
@@ -236,6 +375,105 @@ def job_status(job_id: str) -> dict[str, Any]:
 
 
 # ---- anime ----
+
+@router.get("/discover")
+def discover_anime() -> dict[str, Any]:
+    """Front-page rails: For You, Popular, Top rated, This season."""
+    from localfun.services.anime_discover import build_discover
+    from localfun.services.mal_api import MalClient, MalApiError
+
+    with repo_ctx() as repo:
+        client_id = repo.get_profile().mal_client_id
+        if not client_id:
+            raise HTTPException(
+                400,
+                "Set your MAL Client ID in Settings to load Discover.",
+            )
+        client = MalClient(client_id)
+        try:
+            return build_discover(client, repo)
+        except MalApiError as e:
+            raise HTTPException(502, str(e)) from e
+
+
+@router.get("/manga/discover")
+def discover_manga() -> dict[str, Any]:
+    from localfun.services.manga_discover import build_manga_discover
+
+    with repo_ctx() as repo:
+        return build_manga_discover(repo)
+
+
+@router.get("/downloads")
+def list_downloads() -> dict[str, Any]:
+    with repo_ctx() as repo:
+        items = repo.list_all_media()
+    total_bytes = sum(int(x.get("bytes") or 0) for x in items)
+    return {"count": len(items), "total_bytes": total_bytes, "items": items}
+
+
+@router.get("/upcoming")
+def upcoming_anime(
+    sort: str = "for_you",
+    media: str = "all",
+    next_season: bool = True,
+    q: str = "",
+) -> dict[str, Any]:
+    """Seasonal countdowns ranked For You / by time / by name."""
+    from localfun.services.anime_countdown import build_upcoming
+    from localfun.services.mal_api import MalClient, MalApiError
+
+    if sort not in {"for_you", "time", "name"}:
+        sort = "for_you"
+    with repo_ctx() as repo:
+        client_id = repo.get_profile().mal_client_id
+        if not client_id:
+            raise HTTPException(
+                400, "Add a MAL API Client ID in Settings to load Upcoming."
+            )
+        try:
+            data = build_upcoming(
+                MalClient(client_id),
+                repo,
+                sort=sort,
+                include_next_season=next_season,
+                media_filter=media,
+            )
+        except MalApiError as exc:
+            raise HTTPException(502, str(exc)) from exc
+    qn = (q or "").strip().casefold()
+    if qn:
+        data["items"] = [
+            it
+            for it in data["items"]
+            if qn in (it.get("display_title") or "").casefold()
+            or qn in (it.get("title") or "").casefold()
+            or any(qn in (g or "").casefold() for g in (it.get("genres") or []))
+        ]
+        data["count"] = len(data["items"])
+    return data
+
+
+@router.get("/manga/upcoming")
+def upcoming_manga(
+    sort: str = "for_you",
+    lang: str = "en",
+    q: str = "",
+) -> dict[str, Any]:
+    """Library manga chapter-update trackers (MangaDex)."""
+    from localfun.services.manga_countdown import build_manga_upcoming
+
+    if sort not in {"for_you", "time", "name"}:
+        sort = "for_you"
+    with repo_ctx() as repo:
+        data = build_manga_upcoming(repo, sort=sort, lang=lang, q=q)
+    # Proxy covers for LAN/hotlink safety
+    for it in data.get("items") or []:
+        mid = it.get("mangadex_id")
+        if mid:
+            it["cover_url"] = f"/api/manga/cover/{mid}"
+    return data
+
 
 @router.get("/anime")
 def list_anime(status: str = "all") -> list[dict[str, Any]]:
@@ -477,13 +715,19 @@ def manga_chapters(
         mid = e.mangadex_id
         title = e.title_english or e.title
         saved = {o.chapter_id: o for o in repo.list_offline_chapters(user_manga_id)}
+        positions = repo.list_read_positions(user_manga_id)
     if not mid:
         raise HTTPException(400, "This entry has no MangaDex id")
 
+    client = MangaDexClient()
     try:
-        chapters, total = MangaDexClient().list_chapters(
+        chapters, total = client.list_chapters(
             mid, lang=lang, limit=limit, offset=offset
         )
+        lang_counts: dict[str, int] = {}
+        if offset == 0:
+            # Only on first page — populate language picker with real totals
+            lang_counts = client.language_chapter_counts(mid)
     except MangaDexError as exc:
         raise HTTPException(502, str(exc)) from exc
 
@@ -492,6 +736,8 @@ def manga_chapters(
         off = saved.get(cid)
         ch["offline"] = bool(off)
         ch["offline_pages"] = off.pages if off else 0
+        if cid in positions:
+            ch["resume_page"] = positions[cid]
         job = offline.active_job(user_manga_id, cid)
         if job and job.status in ("pending", "running"):
             ch["download"] = {
@@ -512,6 +758,54 @@ def manga_chapters(
         "limit": limit,
         "total": total,
         "chapters": chapters,
+        "language_counts": lang_counts,
+        "source": "https://api.mangadex.org",
+    }
+
+
+@router.get("/manga/{user_manga_id}/chapters/{chapter_id}/position")
+def manga_get_position(user_manga_id: int, chapter_id: str) -> dict[str, Any]:
+    from mangadex_to_pdf import parse_chapter_id
+
+    try:
+        cid = parse_chapter_id(chapter_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, str(exc)) from exc
+    with repo_ctx() as repo:
+        if not repo.get_user_manga(user_manga_id):
+            raise HTTPException(404, "Manga not found")
+        page = repo.get_read_position(user_manga_id, cid)
+    return {
+        "user_manga_id": user_manga_id,
+        "chapter_id": cid,
+        "page_index": page if page is not None else 0,
+        "saved": page is not None,
+    }
+
+
+class ReadPositionBody(BaseModel):
+    page_index: int = 0
+
+
+@router.put("/manga/{user_manga_id}/chapters/{chapter_id}/position")
+def manga_put_position(
+    user_manga_id: int, chapter_id: str, body: ReadPositionBody
+) -> dict[str, Any]:
+    from mangadex_to_pdf import parse_chapter_id
+
+    try:
+        cid = parse_chapter_id(chapter_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, str(exc)) from exc
+    with repo_ctx() as repo:
+        if not repo.get_user_manga(user_manga_id):
+            raise HTTPException(404, "Manga not found")
+        repo.set_read_position(user_manga_id, cid, body.page_index)
+    return {
+        "ok": True,
+        "user_manga_id": user_manga_id,
+        "chapter_id": cid,
+        "page_index": max(0, int(body.page_index)),
     }
 
 

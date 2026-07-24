@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from localfun.db import init_db
 from localfun.web.api import router as api_router
 from localfun.web.jobs import JOBS
-from localfun.web.security import LocalAccessMiddleware
+from localfun.web.security import LocalAccessMiddleware, sync_lan_from_env
 from localfun.services.stream_sessions import STREAM_STORE
 
 WEB_DIR = Path(__file__).resolve().parent
@@ -21,7 +21,11 @@ TEMPLATES = Jinja2Templates(directory=str(WEB_DIR / "templates"))
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    sync_lan_from_env()
     init_db()
+    from localfun.web.auth import ensure_auth_defaults
+
+    ensure_auth_defaults()
     yield
     try:
         from localfun.services.pahe_browser import close_browser
@@ -119,9 +123,30 @@ def onboarding(request: Request):
     return _page("onboarding.html", request)
 
 
+@app.get("/discover", response_class=HTMLResponse)
+def discover_page(request: Request):
+    # Discover lives inside Anime as a chip
+    return _page("anime.html", request, active="anime")
+
+
 @app.get("/anime", response_class=HTMLResponse)
 def anime_page(request: Request):
     return _page("anime.html", request, active="anime")
+
+
+@app.get("/upcoming", response_class=HTMLResponse)
+def upcoming_page(request: Request):
+    return _page("upcoming.html", request, active="anime")
+
+
+@app.get("/downloads", response_class=HTMLResponse)
+def downloads_page(request: Request):
+    return _page("downloads.html", request, active="downloads")
+
+
+@app.get("/manga/upcoming", response_class=HTMLResponse)
+def manga_upcoming_page(request: Request):
+    return _page("manga_upcoming.html", request, active="manga")
 
 
 @app.get("/watch/{user_anime_id}", response_class=HTMLResponse)
@@ -144,6 +169,11 @@ def manga_reader_page(request: Request, chapter_id: str):
         active="manga",
         chapter_id=chapter_id,
     )
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request):
+    return TEMPLATES.TemplateResponse(request, "login.html", {"request": request})
 
 
 @app.get("/settings", response_class=HTMLResponse)

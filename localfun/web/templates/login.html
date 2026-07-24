@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Login — LocalFun{% endblock %}
+{% block shell %}{% endblock %}
+{% block content %}
+<div class="onboard-wrap panel" style="max-width:420px">
+  <div class="hero">LocalFun</div>
+  <p class="muted">Sign in to use this app from your phone.</p>
+  <div class="field">
+    <label>Username</label>
+    <input id="username" autocomplete="username" />
+  </div>
+  <div class="field">
+    <label>Password</label>
+    <input id="password" type="password" autocomplete="current-password" />
+  </div>
+  <button class="btn primary" id="login-btn" style="width:100%;margin-top:8px">Sign in</button>
+  <p class="status" id="status"></p>
+  <p class="muted" style="margin-top:18px;font-size:13px">Default is <code>user</code> / <code>pwd</code>. Change it in Settings on the PC. After 3 wrong tries your IP is locked.</p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const params = new URLSearchParams(location.search);
+const next = params.get("next") || "/";
+const status = $("#status");
+
+async function doLogin() {
+  status.textContent = "Signing in…";
+  try {
+    await api("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({
+        username: $("#username").value.trim(),
+        password: $("#password").value,
+      }),
+    });
+    location.href = next.startsWith("/") ? next : "/";
+  } catch (e) {
+    status.textContent = e.message || "Login failed";
+  }
+}
+$("#login-btn").onclick = doLogin;
+$("#password").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") doLogin();
+});
+$("#username").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("#password").focus();
+});
+api("/api/auth/status").then((s) => {
+  if (s.loopback || s.authenticated) location.href = next.startsWith("/") ? next : "/";
+}).catch(() => {});
+</script>
+{% endblock %}

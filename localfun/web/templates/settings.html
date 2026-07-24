@@ -10,6 +10,24 @@
     <button class="btn primary" id="save-profile">Save profile</button>
     <p class="status" id="profile-msg"></p>
 
+    <div class="section" style="margin-top:18px">Login</div>
+    <p class="muted">Used when phones connect with <code>--lan</code>. Password is stored hashed (PBKDF2).</p>
+    <div class="field"><label>Username</label><input id="auth-user" autocomplete="username" /></div>
+    <div class="field"><label>Current password</label><input id="auth-cur" type="password" autocomplete="current-password" placeholder="required on phone; optional on this PC" /></div>
+    <div class="field"><label>New password</label><input id="auth-new" type="password" autocomplete="new-password" /></div>
+    <div class="row">
+      <button class="btn primary" id="save-auth">Save login</button>
+      <button class="btn" id="logout-btn">Log out</button>
+    </div>
+    <p class="status" id="auth-msg"></p>
+    <div id="lockout-wrap" style="display:none;margin-top:14px">
+      <div class="section">Locked IPs</div>
+      <p class="muted">3 failed logins locks an IP until you unlock it here.</p>
+      <ul id="lockout-list" class="muted" style="padding-left:18px"></ul>
+      <button class="btn" id="unlock-all">Unlock all</button>
+      <p class="status" id="unlock-msg"></p>
+    </div>
+
     <div class="section" style="margin-top:18px">MyAnimeList</div>
     <div class="row">
       <button class="btn" id="mal-oauth">Connect OAuth…</button>
@@ -40,6 +58,32 @@
 {% endblock %}
 {% block scripts %}
 <script>
+async function loadAuth() {
+  const s = await api("/api/auth/status");
+  $("#auth-user").value = s.auth_username || s.username || "";
+  if (s.loopback) {
+    $("#lockout-wrap").style.display = "block";
+    const list = $("#lockout-list");
+    list.innerHTML = "";
+    (s.lockouts || []).forEach((row) => {
+      const li = document.createElement("li");
+      li.textContent = `${row.ip} — ${row.fail_count} fail(s)${row.locked ? " (locked)" : ""}`;
+      const btn = document.createElement("button");
+      btn.className = "btn";
+      btn.style.marginLeft = "8px";
+      btn.textContent = "Unlock";
+      btn.onclick = async () => {
+        await api("/api/auth/unlock", { method: "POST", body: JSON.stringify({ ip: row.ip }) });
+        loadAuth();
+      };
+      li.appendChild(btn);
+      list.appendChild(li);
+    });
+    if (!(s.lockouts || []).length) {
+      list.innerHTML = "<li>None</li>";
+    }
+  }
+}
 async function load() {
   const p = await api("/api/profile");
   $("#name").value = p.display_name || "";
@@ -50,6 +94,7 @@ async function load() {
   $("#mal-user").value = p.mal_username || (p.has_mal_tokens ? "(token saved)" : "");
   const m = await api("/api/meta");
   $("#paths").innerHTML = `Data: <code>${m.data_dir}</code><br>DB: <code>${m.db_path}</code><br>Output: <code>${m.output_dir}</code>`;
+  await loadAuth();
 }
 $("#save-profile").onclick = async () => {
   try {
@@ -59,6 +104,35 @@ $("#save-profile").onclick = async () => {
     });
     $("#profile-msg").textContent = "Saved";
   } catch (e) { $("#profile-msg").textContent = e.message; }
+};
+$("#save-auth").onclick = async () => {
+  $("#auth-msg").textContent = "Saving…";
+  try {
+    const body = {
+      username: $("#auth-user").value.trim(),
+      current_password: $("#auth-cur").value,
+      new_password: $("#auth-new").value || null,
+    };
+    if (!body.new_password) delete body.new_password;
+    await api("/api/auth/credentials", { method: "POST", body: JSON.stringify(body) });
+    $("#auth-cur").value = "";
+    $("#auth-new").value = "";
+    $("#auth-msg").textContent = "Login updated";
+    await loadAuth();
+  } catch (e) { $("#auth-msg").textContent = e.message; }
+};
+$("#logout-btn").onclick = async () => {
+  try {
+    await api("/api/auth/logout", { method: "POST", body: "{}" });
+    $("#auth-msg").textContent = "Logged out";
+  } catch (e) { $("#auth-msg").textContent = e.message; }
+};
+$("#unlock-all").onclick = async () => {
+  try {
+    const j = await api("/api/auth/unlock", { method: "POST", body: JSON.stringify({}) });
+    $("#unlock-msg").textContent = `Cleared ${j.cleared}`;
+    await loadAuth();
+  } catch (e) { $("#unlock-msg").textContent = e.message; }
 };
 async function runJob(startUrl, msgEl, opts = {}) {
   msgEl.textContent = "Starting…";
