@@ -1,0 +1,58 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+Thumbs.db
+
+# Local downloads / media (may contain personal content)
+output/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.mp4
+*.mkv
+*.webm
+*.m3u8
+*.ts
+
+# Secrets & credentials — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+mal_tokens.json
+**/mal_tokens.json
+credentials.json
+**/credentials.json
+secrets/
+.localfun_token
+
+# Browser / Cloudflare session profiles (cookies!)
+.pahe_browser_profile/
+**/.pahe_browser_profile/
+pahe_browser_profile/
+**/pahe_browser_profile/
+playwright/
+.playwright/
+
+# Caches
+**/stream_cache/
+**/manga_offline/
+**/covers/
+*.log
+
+# Editor / build
+.idea/
+.vscode/
+dist/
+build/
+*.spec
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

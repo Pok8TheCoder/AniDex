@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block title %}Anime — LocalFun{% endblock %}
+{% block content %}
+<div class="row" style="margin-bottom:12px">
+  <div class="row" id="filters"></div>
+  <div style="flex:1"></div>
+  <button class="btn primary" id="btn-search">Search MAL…</button>
+</div>
+<div class="split">
+  <div>
+    <div class="grid" id="grid"></div>
+    <p class="muted" id="empty" style="display:none;padding:24px">No anime yet — search MAL to add some.</p>
+  </div>
+  <div class="panel" id="detail">
+    <div class="section">Detail</div>
+    <h2 id="d-title" style="margin:0 0 6px">Select an anime</h2>
+    <div class="muted" id="d-meta"></div>
+    <p class="muted" id="d-syn" style="max-height:120px;overflow:auto"></p>
+    <div class="field"><label>Status</label><select id="d-status"></select></div>
+    <div class="row">
+      <div class="field" style="flex:1"><label>Eps</label><input type="number" id="d-progress" min="0" /></div>
+      <div class="field" style="flex:1"><label>Score</label><input type="number" id="d-score" min="0" max="10" /></div>
+    </div>
+    <div class="field"><label>Notes</label><textarea id="d-notes" rows="3"></textarea></div>
+    <div class="row">
+      <button class="btn primary" id="d-save" disabled>Save</button>
+      <button class="btn danger" id="d-remove" disabled>Remove</button>
+      <button class="btn primary" id="d-watch" disabled>Watch on AnimePahe…</button>
+    </div>
+    <p class="status" id="d-status-msg"></p>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="search-modal">
+  <div class="modal">
+    <h3 style="margin-top:0">Search MAL</h3>
+    <div class="row">
+      <input id="search-q" placeholder="Title…" style="flex:1" />
+      <button class="btn primary" id="search-go">Search</button>
+      <button class="btn ghost" id="search-close">Close</button>
+    </div>
+    <div class="field" style="margin-top:10px">
+      <label>Add as</label>
+      <select id="search-status"></select>
+    </div>
+    <div id="search-results"></div>
+    <p class="status" id="search-status-msg"></p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const STATUSES = [
+  ["all","All"],["watching","Watching"],["completed","Completed"],
+  ["on_hold","On Hold"],["dropped","Dropped"],["plan_to_watch","Plan to Watch"]
+];
+let currentStatus = "all";
+let selected = null;
+let entries = [];
+
+const statusSel = $("#d-status");
+const searchStatus = $("#search-status");
+STATUSES.filter(s => s[0] !== "all").forEach(([v,l]) => {
+  statusSel.insertAdjacentHTML("beforeend", `<option value="${v}">${l}</option>`);
+  searchStatus.insertAdjacentHTML("beforeend", `<option value="${v}">${l}</option>`);
+});
+
+const filters = $("#filters");
+STATUSES.forEach(([v,l]) => {
+  const b = document.createElement("button");
+  b.className = "btn chip" + (v === "all" ? " active" : "");
+  b.textContent = l;
+  b.onclick = () => { currentStatus = v; $all(".chip", filters).forEach(x => x.classList.remove("active")); b.classList.add("active"); load(); };
+  filters.appendChild(b);
+});
+
+async function load() {
+  entries = await api(`/api/anime?status=${encodeURIComponent(currentStatus)}`);
+  const grid = $("#grid");
+  grid.innerHTML = "";
+  $("#empty").style.display = entries.length ? "none" : "block";
+  entries.forEach(e => {
+    const card = document.createElement("div");
+    card.className = "card" + (selected && selected.user_anime_id === e.user_anime_id ? " selected" : "");
+    card.innerHTML = `
+      <img src="${e.cover_url || ""}" alt="" onerror="this.style.opacity=.2" />
+      <div class="meta">
+        <div class="title">${e.display_title}</div>
+        <div class="sub">${e.list_status.replaceAll("_"," ")} · ${e.progress}${e.episodes ? "/"+e.episodes : ""}</div>
+      </div>`;
+    card.onclick = () => show(e);
+    grid.appendChild(card);
+  });
+}
+
+function show(e) {
+  selected = e;
+  $("#d-title").textContent = e.display_title;
+  $("#d-meta").textContent = [e.media_type, e.airing_status, e.mal_id ? "MAL "+e.mal_id : null].filter(Boolean).join(" · ");
+  $("#d-syn").textContent = e.synopsis || "No synopsis.";
+  statusSel.value = e.list_status;
+  $("#d-progress").value = e.progress;
+  $("#d-score").value = e.score;
+  $("#d-notes").value = e.notes || "";
+  ["d-save","d-remove","d-watch"].forEach(id => $(`#${id}`).disabled = false);
+  load();
+}
+
+$("#d-save").onclick = async () => {
+  if (!selected) return;
+  try {
+    selected = await api(`/api/anime/${selected.user_anime_id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        list_status: statusSel.value,
+        progress: +$("#d-progress").value || 0,
+        score: +$("#d-score").value || 0,
+        notes: $("#d-notes").value,
+      }),
+    });
+    $("#d-status-msg").textContent = "Saved";
+    load();
+  } catch (e) { $("#d-status-msg").textContent = e.message; }
+};
+
+$("#d-remove").onclick = async () => {
+  if (!selected || !confirm("Remove from list?")) return;
+  await api(`/api/anime/${selected.user_anime_id}`, { method: "DELETE" });
+  selected = null;
+  $("#d-title").textContent = "Select an anime";
+  load();
+};
+
+$("#d-watch").onclick = () => {
+  if (selected) location.href = `/watch/${selected.user_anime_id}`;
+};
+
+const modal = $("#search-modal");
+$("#btn-search").onclick = () => modal.classList.add("open");
+$("#search-close").onclick = () => modal.classList.remove("open");
+$("#search-go").onclick = doSearch;
+$("#search-q").onkeydown = (e) => { if (e.key === "Enter") doSearch(); };
+
+async function doSearch() {
+  const q = $("#search-q").value.trim();
+  const box = $("#search-results");
+  const msg = $("#search-status-msg");
+  box.innerHTML = "";
+  if (!q) return;
+  msg.textContent = "Searching…";
+  try {
+    const hits = await api(`/api/anime/search?q=${encodeURIComponent(q)}`);
+    msg.textContent = `${hits.length} result(s)`;
+    hits.forEach(h => {
+      const div = document.createElement("div");
+      div.className = "search-hit";
+      div.innerHTML = `<strong>${h.title_english || h.title}</strong><div class="muted">${h.media_type || ""} · ${h.episodes || "?"} eps</div>`;
+      div.onclick = async () => {
+        msg.textContent = "Adding…";
+        const e = await api("/api/anime/add", {
+          method: "POST",
+          body: JSON.stringify({ ...h, list_status: searchStatus.value }),
+        });
+        modal.classList.remove("open");
+        await load();
+        show(e);
+      };
+      box.appendChild(div);
+    });
+  } catch (e) { msg.textContent = e.message; }
+}
+
+api("/api/profile").then(p => {
+  if (p.display_name) $("#user-sub").textContent = `Hey ${p.display_name} — lists stay on this PC`;
+}).catch(() => {});
+load();
+</script>
+{% endblock %}

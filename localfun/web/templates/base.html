@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}LocalFun{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/app.css" />
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <div class="app-shell">
+    {% block shell %}
+    <div class="topbar">
+      <div class="brand">Local<span>Fun</span></div>
+      <nav class="nav">
+        <a href="/anime" class="{% if active == 'anime' %}active{% endif %}">Anime</a>
+        <a href="/manga" class="{% if active == 'manga' %}active{% endif %}">Manga</a>
+        <a href="/settings" class="{% if active == 'settings' %}active{% endif %}">Settings</a>
+      </nav>
+      <div class="subtitle" id="user-sub">Your anime &amp; manga — local first</div>
+    </div>
+    {% endblock %}
+    {% block content %}{% endblock %}
+  </div>
+  <script src="/static/js/app.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

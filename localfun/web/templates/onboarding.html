@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Welcome — LocalFun{% endblock %}
+{% block shell %}{% endblock %}
+{% block content %}
+<div class="onboard-wrap panel">
+  <div class="hero">Welcome to LocalFun</div>
+  <p class="muted">Your anime &amp; manga lists live on this PC. Watch with a real browser player.</p>
+  <div class="field">
+    <label>What should we call you?</label>
+    <input id="name" placeholder="Display name" />
+  </div>
+  <div class="row">
+    <button class="btn primary" id="start-empty">Start empty</button>
+    <button class="btn" id="import-xml">Import MAL XML…</button>
+    <input type="file" id="xml-file" accept=".xml" hidden />
+  </div>
+  <p class="status" id="status"></p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  const status = $("#status");
+  async function finish(mode) {
+    const display_name = $("#name").value.trim();
+    status.textContent = "Saving…";
+    await api("/api/onboarding", {
+      method: "POST",
+      body: JSON.stringify({ display_name, mode }),
+    });
+    location.href = "/anime";
+  }
+  $("#start-empty").onclick = () => finish("empty").catch(e => status.textContent = e.message);
+  $("#import-xml").onclick = () => $("#xml-file").click();
+  $("#xml-file").onchange = async (ev) => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    try {
+      status.textContent = "Importing…";
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/settings/mal/import-xml", { method: "POST", body: fd });
+      if (!res.ok) throw new Error(await res.text());
+      const j = await res.json();
+      status.textContent = `Imported ${j.imported}, updated ${j.updated}`;
+      await finish("import");
+    } catch (e) {
+      status.textContent = e.message;
+    }
+  };
+</script>
+{% endblock %}

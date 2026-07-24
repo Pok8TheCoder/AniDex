@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Settings — LocalFun{% endblock %}
+{% block content %}
+<div class="split" style="grid-template-columns:1fr 1fr">
+  <div class="panel">
+    <div class="section">Profile</div>
+    <div class="field"><label>Display name</label><input id="name" /></div>
+    <div class="field"><label>MAL Client ID</label><input id="mal-id" /></div>
+    <div class="field"><label>MAL username</label><input id="mal-user" readonly /></div>
+    <button class="btn primary" id="save-profile">Save profile</button>
+    <p class="status" id="profile-msg"></p>
+
+    <div class="section" style="margin-top:18px">MyAnimeList</div>
+    <div class="row">
+      <button class="btn" id="mal-oauth">Connect OAuth…</button>
+      <button class="btn" id="mal-pull">Pull list</button>
+      <button class="btn" id="mal-push">Push list</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn" id="xml-import">Import XML…</button>
+      <input type="file" id="xml-file" accept=".xml" hidden />
+      <a class="btn" href="/api/settings/mal/export-xml">Export XML</a>
+    </div>
+    <p class="status" id="mal-msg"></p>
+  </div>
+
+  <div class="panel">
+    <div class="section">AnimePahe</div>
+    <p class="muted">Pass Cloudflare once in the Chrome window LocalFun opens. Cookies stay in the local profile.</p>
+    <div class="row">
+      <button class="btn primary" id="cf-pass">Pass Cloudflare…</button>
+      <button class="btn" id="cf-check">Check status</button>
+    </div>
+    <p class="status" id="cf-msg"></p>
+
+    <div class="section" style="margin-top:18px">Paths</div>
+    <p class="muted" id="paths"></p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function load() {
+  const p = await api("/api/profile");
+  $("#name").value = p.display_name || "";
+  $("#mal-id").value = p.mal_client_id || "";
+  if (p.has_mal_client_id && p.mal_client_id && p.mal_client_id.includes("*")) {
+    $("#mal-id").placeholder = "Masked on LAN — edit only from this PC";
+  }
+  $("#mal-user").value = p.mal_username || (p.has_mal_tokens ? "(token saved)" : "");
+  const m = await api("/api/meta");
+  $("#paths").innerHTML = `Data: <code>${m.data_dir}</code><br>DB: <code>${m.db_path}</code><br>Output: <code>${m.output_dir}</code>`;
+}
+$("#save-profile").onclick = async () => {
+  try {
+    await api("/api/profile", {
+      method: "PATCH",
+      body: JSON.stringify({ display_name: $("#name").value, mal_client_id: $("#mal-id").value }),
+    });
+    $("#profile-msg").textContent = "Saved";
+  } catch (e) { $("#profile-msg").textContent = e.message; }
+};
+async function runJob(startUrl, msgEl, opts = {}) {
+  msgEl.textContent = "Starting…";
+  try {
+    const { job_id } = await api(startUrl, { method: "POST", ...opts });
+    const job = await pollJob(job_id, { onProgress: j => msgEl.textContent = j.message || j.status });
+    msgEl.textContent = job.message || "Done";
+    return job;
+  } catch (e) { msgEl.textContent = e.message; }
+}
+$("#mal-oauth").onclick = () => runJob("/api/settings/mal/oauth", $("#mal-msg")).then(load);
+$("#mal-pull").onclick = () => runJob("/api/settings/mal/sync?mode=pull", $("#mal-msg"));
+$("#mal-push").onclick = () => runJob("/api/settings/mal/sync?mode=push", $("#mal-msg"));
+$("#xml-import").onclick = () => $("#xml-file").click();
+$("#xml-file").onchange = async (ev) => {
+  const file = ev.target.files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append("file", file);
+  $("#mal-msg").textContent = "Importing…";
+  try {
+    const res = await fetch("/api/settings/mal/import-xml", { method: "POST", body: fd });
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.detail || "Import failed");
+    $("#mal-msg").textContent = `Imported ${j.imported}, updated ${j.updated}`;
+  } catch (e) { $("#mal-msg").textContent = e.message; }
+};
+$("#cf-pass").onclick = () => runJob("/api/settings/cloudflare", $("#cf-msg"));
+$("#cf-check").onclick = async () => {
+  $("#cf-msg").textContent = "Checking…";
+  try {
+    const j = await api("/api/settings/cloudflare/status");
+    $("#cf-msg").textContent = j.cleared ? "Cloudflare looks clear" : ("Not clear" + (j.error ? ": "+j.error : ""));
+  } catch (e) { $("#cf-msg").textContent = e.message; }
+};
+load();
+</script>
+{% endblock %}

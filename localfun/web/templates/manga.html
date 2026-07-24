@@ -1,0 +1,406 @@
+{% extends "base.html" %}
+{% block title %}Manga — LocalFun{% endblock %}
+{% block content %}
+<div class="row" style="margin-bottom:12px">
+  <div class="row" id="filters"></div>
+  <div style="flex:1"></div>
+  <button class="btn primary" id="btn-search">Search MangaDex…</button>
+</div>
+<div class="split" style="grid-template-columns: 1fr 380px">
+  <div>
+    <div class="grid" id="grid"></div>
+    <p class="muted" id="empty" style="display:none;padding:24px">No manga yet — search MangaDex to add some.</p>
+  </div>
+  <div class="panel" id="detail">
+    <div class="section">Detail</div>
+    <h2 id="d-title" style="margin:0 0 6px">Select a manga</h2>
+    <div class="muted" id="d-meta"></div>
+    <p class="muted" id="d-syn" style="max-height:80px;overflow:auto"></p>
+    <div class="field"><label>Status</label><select id="d-status"></select></div>
+    <div class="row">
+      <div class="field" style="flex:1"><label>Chapters read</label><input type="number" id="d-progress" min="0" /></div>
+      <div class="field" style="flex:1"><label>Score</label><input type="number" id="d-score" min="0" max="10" /></div>
+    </div>
+    <div class="field"><label>Notes</label><textarea id="d-notes" rows="2"></textarea></div>
+    <div class="row">
+      <button class="btn primary" id="d-save" disabled>Save</button>
+      <button class="btn danger" id="d-remove" disabled>Remove</button>
+    </div>
+    <p class="status" id="d-status-msg"></p>
+
+    <div class="section">Chapters</div>
+    <div class="row" style="margin-bottom:8px">
+      <select id="ch-lang" style="width:auto">
+        <option value="en" selected>EN</option>
+        <option value="ja">JA</option>
+        <option value="es">ES</option>
+        <option value="pt-br">PT-BR</option>
+      </select>
+      <button class="btn" id="ch-refresh" disabled>Refresh list</button>
+    </div>
+    <div id="ch-list" class="chapter-list"></div>
+    <p class="muted" id="ch-msg">Select a title to load chapters.</p>
+
+    <details style="margin-top:12px">
+      <summary class="muted">Advanced: paste chapter URL / PDF</summary>
+      <div class="field" style="margin-top:8px">
+        <div class="row">
+          <input id="ch-url" placeholder="https://mangadex.org/chapter/…" style="flex:1" />
+          <button class="btn" id="d-read-url" disabled>Read</button>
+          <button class="btn" id="d-pdf" disabled>PDF</button>
+        </div>
+      </div>
+    </details>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="search-modal">
+  <div class="modal">
+    <h3 style="margin-top:0">Search MangaDex</h3>
+    <div class="row">
+      <input id="search-q" placeholder="Title…" style="flex:1" />
+      <button class="btn primary" id="search-go">Search</button>
+      <button class="btn ghost" id="search-close">Close</button>
+    </div>
+    <div class="field" style="margin-top:10px">
+      <label>Add as</label>
+      <select id="search-status"></select>
+    </div>
+    <div id="search-results"></div>
+    <p class="status" id="search-status-msg"></p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const STATUSES = [
+  ["all","All"],["reading","Reading"],["completed","Completed"],
+  ["on_hold","On Hold"],["dropped","Dropped"],["plan_to_read","Plan to Read"]
+];
+let currentStatus = "all";
+let selected = null;
+
+const statusSel = $("#d-status");
+const searchStatus = $("#search-status");
+STATUSES.filter(s => s[0] !== "all").forEach(([v,l]) => {
+  statusSel.insertAdjacentHTML("beforeend", `<option value="${v}">${l}</option>`);
+  searchStatus.insertAdjacentHTML("beforeend", `<option value="${v}">${l}</option>`);
+});
+const filters = $("#filters");
+STATUSES.forEach(([v,l]) => {
+  const b = document.createElement("button");
+  b.className = "btn chip" + (v === "all" ? " active" : "");
+  b.textContent = l;
+  b.onclick = () => { currentStatus = v; $all(".chip", filters).forEach(x => x.classList.remove("active")); b.classList.add("active"); load(); };
+  filters.appendChild(b);
+});
+
+async function load() {
+  const entries = await api(`/api/manga?status=${encodeURIComponent(currentStatus)}`);
+  const grid = $("#grid");
+  grid.innerHTML = "";
+  $("#empty").style.display = entries.length ? "none" : "block";
+  entries.forEach(e => {
+    const card = document.createElement("div");
+    card.className = "card" + (selected && selected.user_manga_id === e.user_manga_id ? " selected" : "");
+    card.innerHTML = `
+      <img src="${e.cover_url || ""}" alt="" onerror="this.style.opacity=.2" />
+      <div class="meta">
+        <div class="title">${e.display_title}</div>
+        <div class="sub">${e.list_status.replaceAll("_"," ")} · ${e.progress}</div>
+      </div>`;
+    card.onclick = () => show(e);
+    grid.appendChild(card);
+  });
+  return entries;
+}
+
+async function show(e) {
+  selected = e;
+  $("#d-title").textContent = e.display_title;
+  $("#d-meta").textContent = [e.status, e.year].filter(Boolean).join(" · ");
+  $("#d-syn").textContent = e.synopsis || "No synopsis.";
+  statusSel.value = e.list_status;
+  $("#d-progress").value = e.progress;
+  $("#d-score").value = e.score;
+  $("#d-notes").value = e.notes || "";
+  ["d-save","d-remove","d-pdf","d-read-url","ch-refresh"].forEach(id => $(`#${id}`).disabled = false);
+  await load();
+  await loadChapters();
+}
+
+let chOffset = 0;
+let chTotal = 0;
+let chLoading = false;
+let chHasMore = false;
+let chLang = "en";
+
+async function loadChapters({ reset = true } = {}) {
+  if (!selected) return;
+  const box = $("#ch-list");
+  const msg = $("#ch-msg");
+  if (reset) {
+    box.innerHTML = "";
+    chOffset = 0;
+    chTotal = 0;
+    chHasMore = true;
+    msg.textContent = "Loading chapters…";
+  }
+  if (chLoading || !chHasMore) return;
+  chLoading = true;
+  try {
+    chLang = $("#ch-lang").value;
+    const data = await api(
+      `/api/manga/${selected.user_manga_id}/chapters?lang=${encodeURIComponent(chLang)}&limit=100&offset=${chOffset}`
+    );
+    chTotal = data.total || 0;
+    const pendingJobs = [];
+    data.chapters.forEach((ch) => {
+      const row = appendChapterRow(box, ch, chLang);
+      const dl = ch.download;
+      const busy = !!(dl && (dl.status === "pending" || dl.status === "running"));
+      const cb = row.querySelector("input[type=checkbox]");
+      if (busy && dl.job_id) pendingJobs.push({ id: ch.id, jobId: dl.job_id, row, cb });
+    });
+    chOffset += data.chapters.length;
+    chHasMore = chOffset < chTotal && data.chapters.length > 0;
+    if (!chOffset) msg.textContent = "No chapters for this language.";
+    else {
+      msg.textContent = chHasMore
+        ? `${chOffset} / ${chTotal} chapter(s) · scroll for more · ☑ = offline`
+        : `${chOffset} / ${chTotal} chapter(s) · ☑ = offline`;
+    }
+    pendingJobs.forEach(({ id, jobId, row, cb }) => trackDownload(id, jobId, row, cb));
+  } catch (err) {
+    msg.textContent = err.message;
+  } finally {
+    chLoading = false;
+  }
+}
+
+function appendChapterRow(box, ch, lang) {
+  const msg = $("#ch-msg");
+  const row = document.createElement("div");
+  row.className = "chapter-row" + (ch.offline ? " offline" : "");
+  row.dataset.chapterId = ch.id;
+
+  const label = `Ch. ${ch.chapter}` + (ch.title ? ` — ${ch.title}` : "");
+  const pages = ch.pages ? `${ch.pages}p` : "";
+  const dl = ch.download;
+  const busy = !!(dl && (dl.status === "pending" || dl.status === "running"));
+  let progressHtml = "";
+  if (busy) {
+    const pct = dl.total ? Math.round((dl.progress / dl.total) * 100) : 0;
+    progressHtml = `
+      <div class="ch-progress">
+        <div class="ch-progress-bar"><i style="width:${pct}%"></i></div>
+        <span class="ch-progress-txt">${dl.progress || 0}/${dl.total || "?"} · ${pct}%</span>
+      </div>`;
+  } else if (ch.offline) {
+    progressHtml = `<div class="ch-progress"><span class="ch-progress-txt offline-tag">Saved offline</span></div>`;
+  }
+
+  row.innerHTML = `
+    <label class="ch-check" title="Download for offline">
+      <input type="checkbox" ${ch.offline || busy ? "checked" : ""} />
+    </label>
+    <a class="ch-main" href="/manga/read/${ch.id}?m=${selected.user_manga_id}&lang=${encodeURIComponent(lang)}">
+      <span class="ch-label">${label}</span>
+      <span class="muted ch-pages">${pages}</span>
+    </a>
+    ${progressHtml}`;
+
+  const cb = row.querySelector("input[type=checkbox]");
+  cb.addEventListener("click", (ev) => ev.stopPropagation());
+  cb.addEventListener("change", async () => {
+    if (cb.checked) {
+      cb.disabled = true;
+      try {
+        const res = await api(`/api/manga/${selected.user_manga_id}/chapters/${ch.id}/offline`, {
+          method: "POST",
+          body: JSON.stringify({ chapter_no: String(ch.chapter || ""), title: ch.title || "" }),
+        });
+        if (res.job_id) {
+          cb.disabled = false;
+          trackDownload(ch.id, res.job_id, row, cb);
+        } else {
+          row.classList.add("offline");
+          ensureOfflineTag(row);
+          cb.disabled = false;
+        }
+      } catch (err) {
+        cb.checked = false;
+        cb.disabled = false;
+        msg.textContent = err.message;
+      }
+    } else {
+      cb.disabled = true;
+      try {
+        await api(`/api/manga/${selected.user_manga_id}/chapters/${ch.id}/offline`, { method: "DELETE" });
+        row.classList.remove("offline");
+        row.querySelector(".ch-progress")?.remove();
+        cb.disabled = false;
+      } catch (err) {
+        cb.checked = true;
+        cb.disabled = false;
+        msg.textContent = err.message;
+      }
+    }
+  });
+
+  box.appendChild(row);
+  return row;
+}
+
+function ensureOfflineTag(row) {
+  let prog = row.querySelector(".ch-progress");
+  if (!prog) {
+    prog = document.createElement("div");
+    prog.className = "ch-progress";
+    row.appendChild(prog);
+  }
+  prog.innerHTML = `<span class="ch-progress-txt offline-tag">Saved offline</span>`;
+}
+
+function trackDownload(chapterId, jobId, row, cb) {
+  let prog = row.querySelector(".ch-progress");
+  if (!prog) {
+    prog = document.createElement("div");
+    prog.className = "ch-progress";
+    row.appendChild(prog);
+  }
+  cb.checked = true;
+  let cancelled = false;
+  const onUncheck = () => {
+    if (!cb.checked) cancelled = true;
+  };
+  cb.addEventListener("change", onUncheck, { once: true });
+  pollJob(jobId, {
+    onProgress: (j) => {
+      if (cancelled || !cb.checked) return;
+      const pct = j.total ? Math.round((j.progress / j.total) * 100) : 0;
+      prog.innerHTML = `
+        <div class="ch-progress-bar"><i style="width:${pct}%"></i></div>
+        <span class="ch-progress-txt">${j.progress || 0}/${j.total || "?"} · ${pct}%</span>`;
+    },
+  }).then(() => {
+    if (!cb.checked) return;
+    row.classList.add("offline");
+    ensureOfflineTag(row);
+    cb.checked = true;
+  }).catch((err) => {
+    if (!cb.checked) {
+      row.querySelector(".ch-progress")?.remove();
+      return;
+    }
+    cb.checked = false;
+    prog.remove();
+    const msg = $("#ch-msg");
+    if (msg && !String(err.message || "").toLowerCase().includes("cancel")) {
+      msg.textContent = err.message;
+    }
+  });
+}
+
+$("#ch-list").addEventListener("scroll", () => {
+  const box = $("#ch-list");
+  if (box.scrollTop + box.clientHeight >= box.scrollHeight - 80) {
+    loadChapters({ reset: false });
+  }
+});
+
+
+$("#d-save").onclick = async () => {
+  if (!selected) return;
+  try {
+    selected = await api(`/api/manga/${selected.user_manga_id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        list_status: statusSel.value,
+        progress: +$("#d-progress").value || 0,
+        score: +$("#d-score").value || 0,
+        notes: $("#d-notes").value,
+      }),
+    });
+    $("#d-status-msg").textContent = "Saved";
+    load();
+  } catch (e) { $("#d-status-msg").textContent = e.message; }
+};
+$("#d-remove").onclick = async () => {
+  if (!selected || !confirm("Remove from list?")) return;
+  await api(`/api/manga/${selected.user_manga_id}`, { method: "DELETE" });
+  selected = null;
+  $("#ch-list").innerHTML = "";
+  $("#ch-msg").textContent = "Select a title to load chapters.";
+  load();
+};
+$("#ch-refresh").onclick = loadChapters;
+$("#ch-lang").onchange = loadChapters;
+
+$("#d-read-url").onclick = () => {
+  const url = $("#ch-url").value.trim();
+  if (!url) return;
+  const m = url.match(/chapter\/([0-9a-f-]{36})/i);
+  if (!m) { $("#d-status-msg").textContent = "Need a MangaDex chapter URL"; return; }
+  const q = selected ? `?m=${selected.user_manga_id}` : "";
+  location.href = `/manga/read/${m[1]}${q}`;
+};
+
+$("#d-pdf").onclick = async () => {
+  if (!selected) return;
+  const chapter_url = $("#ch-url").value.trim();
+  if (!chapter_url) return;
+  $("#d-status-msg").textContent = "Exporting PDF…";
+  try {
+    const { job_id } = await api("/api/manga/pdf", {
+      method: "POST",
+      body: JSON.stringify({ chapter_url, user_manga_id: selected.user_manga_id }),
+    });
+    const job = await pollJob(job_id, { onProgress: j => $("#d-status-msg").textContent = j.message || j.status });
+    $("#d-status-msg").textContent = `Saved ${job.result.path}`;
+  } catch (e) { $("#d-status-msg").textContent = e.message; }
+};
+
+const modal = $("#search-modal");
+$("#btn-search").onclick = () => modal.classList.add("open");
+$("#search-close").onclick = () => modal.classList.remove("open");
+$("#search-go").onclick = doSearch;
+async function doSearch() {
+  const q = $("#search-q").value.trim();
+  const box = $("#search-results");
+  const msg = $("#search-status-msg");
+  box.innerHTML = "";
+  if (!q) return;
+  msg.textContent = "Searching…";
+  try {
+    const hits = await api(`/api/manga/search?q=${encodeURIComponent(q)}`);
+    msg.textContent = `${hits.length} result(s)`;
+    hits.forEach(h => {
+      const div = document.createElement("div");
+      div.className = "search-hit";
+      div.innerHTML = `<strong>${h.title_english || h.title}</strong><div class="muted">${h.status || ""} ${h.year || ""}</div>`;
+      div.onclick = async () => {
+        const e = await api("/api/manga/add", {
+          method: "POST",
+          body: JSON.stringify({ ...h, list_status: searchStatus.value }),
+        });
+        modal.classList.remove("open");
+        await load();
+        show(e);
+      };
+      box.appendChild(div);
+    });
+  } catch (e) { msg.textContent = e.message; }
+}
+
+(async () => {
+  const entries = await load();
+  const openId = new URLSearchParams(location.search).get("open");
+  if (openId) {
+    const e = entries.find(x => String(x.user_manga_id) === openId)
+      || await api(`/api/manga/${openId}`).catch(() => null);
+    if (e) show(e);
+  }
+})();
+</script>
+{% endblock %}

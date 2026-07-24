@@ -1,0 +1,334 @@
+{% extends "base.html" %}
+{% block title %}Watch — LocalFun{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
+{% endblock %}
+{% block content %}
+<div class="row" style="margin-bottom:10px">
+  <a class="btn ghost" href="/anime">← Back</a>
+  <div class="muted" id="crumb">Home · Watching</div>
+  <div style="flex:1"></div>
+  <button class="btn ghost" id="btn-refresh">Refresh</button>
+  <button class="btn ghost" id="btn-change">Change link…</button>
+</div>
+
+<div class="watch-layout">
+  <aside class="watch-sidebar">
+    <strong>List of episodes:</strong>
+    <div class="row" style="margin:8px 0">
+      <select id="season" style="flex:1"></select>
+      <input id="ep-search" placeholder="Number of Ep" style="flex:1" />
+    </div>
+    <div class="muted" id="link-lbl" style="margin-bottom:8px"></div>
+    <div class="ep-grid" id="ep-grid"></div>
+  </aside>
+
+  <section>
+    <div class="player-chrome">
+      <video id="video" controls playsinline></video>
+    </div>
+
+    <div class="row" style="margin:10px 0">
+      <span class="status" id="player-status" style="flex:1">Idle</span>
+      <button class="btn ghost" id="btn-autonext">Auto Next Off</button>
+      <button class="btn" id="btn-prev">Prev</button>
+      <button class="btn primary" id="btn-next">Next</button>
+      <button class="btn" id="btn-dl">Download</button>
+      <button class="btn danger" id="btn-del">Delete</button>
+    </div>
+
+    <div class="row" style="align-items:flex-start;gap:14px">
+      <div class="watch-info" id="watch-info">Select an episode to start watching.</div>
+      <div style="flex:1">
+        <div class="row" style="margin-bottom:8px">
+          <span class="server-label">AUDIO</span>
+          <button class="btn server-chip active" data-audio="jpn">SUB</button>
+          <button class="btn server-chip" data-audio="eng">DUB</button>
+        </div>
+        <div class="row">
+          <span class="server-label">QUALITY</span>
+          <button class="btn server-chip active" data-res="1080">1080p</button>
+          <button class="btn server-chip" data-res="720">720p</button>
+          <button class="btn server-chip" data-res="360">360p</button>
+        </div>
+      </div>
+    </div>
+    <p class="status" id="ep-status"></p>
+  </section>
+</div>
+
+<div class="modal-backdrop" id="link-modal">
+  <div class="modal">
+    <h3 style="margin-top:0">Link AnimePahe title</h3>
+    <div id="link-results"></div>
+    <p class="status" id="link-msg">Searching…</p>
+    <button class="btn ghost" id="link-close">Close</button>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const USER_ANIME_ID = {{ user_anime_id }};
+const video = $("#video");
+let catalog = null;
+let seasons = [];
+let selected = null; // {anime_session, episode_session, episode, title, media_id}
+let audio = "jpn";
+let resolution = 1080;
+let hls = null;
+let streamId = null;
+let autoNext = false;
+
+async function loadCatalog(autoLink = true) {
+  catalog = await api(`/api/watch/${USER_ANIME_ID}/catalog`);
+  $("#crumb").textContent = `Home · Watching ${catalog.anime.display_title}`;
+  seasons = catalog.seasons || [];
+  const link = catalog.link;
+  $("#link-lbl").textContent = link ? `Linked: ${link.pahe_title}` : "Not linked to AnimePahe yet.";
+  const box = $("#season");
+  box.innerHTML = "";
+  seasons.forEach((s, i) => {
+    const opt = document.createElement("option");
+    opt.value = i;
+    opt.textContent = `${s.label || "Season"}${s.year ? " ("+s.year+")" : ""} · ${s.episode_count} eps`;
+    box.appendChild(opt);
+  });
+  rebuildEps();
+  if (!link && autoLink) await doLink();
+  else if (link && !seasons.length && autoLink) await doLink();
+}
+
+function currentEps() {
+  const i = +$("#season").value;
+  return seasons[i]?.episodes || [];
+}
+
+function rebuildEps() {
+  const q = $("#ep-search").value.trim();
+  const grid = $("#ep-grid");
+  grid.innerHTML = "";
+  currentEps().forEach(ep => {
+    const label = LF.fmtEp(ep.episode);
+    if (q && !label.includes(q) && !(ep.title || "").toLowerCase().includes(q.toLowerCase())) {
+      if (String(ep.episode) !== q) return;
+    }
+    const b = document.createElement("button");
+    b.className = "ep-tile" + (ep.downloaded ? " downloaded" : "");
+    if (selected && selected.episode_session === ep.episode_session) b.classList.add("active");
+    b.textContent = label;
+    b.title = `E${label}` + (ep.title ? " — " + ep.title : "") + (ep.downloaded ? " · Downloaded" : "");
+    b.onclick = () => selectEp(ep, true);
+    grid.appendChild(b);
+  });
+}
+
+function selectEp(ep, play) {
+  const season = seasons[+$("#season").value];
+  selected = {
+    anime_session: season.pahe_session,
+    episode_session: ep.episode_session,
+    episode: ep.episode,
+    title: ep.title,
+    media_id: ep.media_id || null,
+    downloaded: ep.downloaded,
+  };
+  $("#watch-info").textContent = `You are watching Episode ${LF.fmtEp(ep.episode)}. If the current quality doesn’t work, try another option beside.`;
+  $("#btn-del").disabled = !ep.downloaded;
+  rebuildEps();
+  if (play) playSelected();
+}
+
+async function doLink(chosen_session = null, refresh_only = false) {
+  $("#link-lbl").textContent = refresh_only ? "Refreshing…" : "Searching AnimePahe…";
+  $("#player-status").textContent = "Linking…";
+  try {
+    const { job_id } = await api(`/api/watch/${USER_ANIME_ID}/link`, {
+      method: "POST",
+      body: JSON.stringify({ chosen_session, refresh_only }),
+    });
+    await pollJob(job_id, { onProgress: j => $("#player-status").textContent = j.message || j.status });
+    await loadCatalog(false);
+    $("#player-status").textContent = "Linked";
+  } catch (e) {
+    $("#link-lbl").textContent = e.message;
+    $("#player-status").textContent = e.message;
+  }
+}
+
+function destroyHls() {
+  if (hls) { hls.destroy(); hls = null; }
+  if (streamId) {
+    fetch(`/stream/${streamId}`, { method: "DELETE" }).catch(() => {});
+    streamId = null;
+  }
+  video.removeAttribute("src");
+  video.load();
+}
+
+async function playSelected() {
+  if (!selected) return;
+  destroyHls();
+  if (selected.downloaded && selected.media_id) {
+    video.src = `/api/media/${selected.media_id}/file`;
+    video.play();
+    $("#player-status").textContent = "Playing local file";
+    return;
+  }
+  $("#player-status").textContent = "Resolving…";
+  try {
+    const { job_id } = await api("/api/watch/resolve", {
+      method: "POST",
+      body: JSON.stringify({
+        user_anime_id: USER_ANIME_ID,
+        anime_session: selected.anime_session,
+        episode_session: selected.episode_session,
+        episode: selected.episode,
+        audio, resolution,
+      }),
+    });
+    const job = await pollJob(job_id, { onProgress: j => $("#player-status").textContent = j.message || j.status });
+    const r = job.result;
+    streamId = r.stream_id;
+    const url = r.playlist_url;
+    if (Hls.isSupported()) {
+      hls = new Hls({ enableWorker: true });
+      hls.loadSource(url);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => video.play());
+      hls.on(Hls.Events.ERROR, (_, data) => {
+        if (data.fatal) $("#player-status").textContent = "Playback error: " + (data.type || "fatal");
+      });
+    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      video.src = url;
+      video.play();
+    } else {
+      throw new Error("HLS not supported in this browser");
+    }
+    $("#player-status").textContent = r.source_label
+      ? `Streaming · ${r.source_label} (cache ${r.cached || 0}/${r.segments || "?"})`
+      : "Streaming…";
+    // Report playhead so server prefetches ±2 min around seek/watch position
+    const reportPlayhead = () => {
+      if (!streamId) return;
+      fetch(`/stream/${streamId}/playhead`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ seconds: video.currentTime || 0 }),
+      }).catch(() => {});
+    };
+    video.ontimeupdate = () => {
+      if (video.paused) return;
+      if (!reportPlayhead._last || Date.now() - reportPlayhead._last > 1000) {
+        reportPlayhead._last = Date.now();
+        reportPlayhead();
+      }
+    };
+    video.onseeking = () => {
+      reportPlayhead._last = 0;
+      reportPlayhead();
+      $("#player-status").textContent = "Seeking — pulling cache…";
+    };
+    video.onseeked = () => {
+      $("#player-status").textContent = r.source_label
+        ? `Streaming · ${r.source_label}`
+        : "Streaming…";
+    };
+  } catch (e) {
+    $("#player-status").textContent = e.message;
+  }
+}
+
+$("#season").onchange = rebuildEps;
+$("#ep-search").oninput = rebuildEps;
+$("#btn-refresh").onclick = () => doLink(null, true);
+$("#btn-change").onclick = async () => {
+  const modal = $("#link-modal");
+  modal.classList.add("open");
+  $("#link-msg").textContent = "Searching…";
+  $("#link-results").innerHTML = "";
+  try {
+    const q = catalog.anime.display_title;
+    const { job_id } = await api(`/api/watch/pahe-search?q=${encodeURIComponent(q)}`);
+    const job = await pollJob(job_id);
+    const hits = job.result || [];
+    $("#link-msg").textContent = `${hits.length} result(s)`;
+    hits.forEach(h => {
+      const div = document.createElement("div");
+      div.className = "search-hit";
+      div.innerHTML = `<strong>${h.title}</strong><div class="muted">${[h.type,h.year,h.episodes?h.episodes+" eps":null].filter(Boolean).join(" · ")}</div>`;
+      div.onclick = async () => {
+        modal.classList.remove("open");
+        await doLink(h.session, false);
+      };
+      $("#link-results").appendChild(div);
+    });
+  } catch (e) { $("#link-msg").textContent = e.message; }
+};
+$("#link-close").onclick = () => $("#link-modal").classList.remove("open");
+
+$all("[data-audio]").forEach(b => b.onclick = () => {
+  audio = b.dataset.audio;
+  $all("[data-audio]").forEach(x => x.classList.toggle("active", x === b));
+  if (selected && !selected.downloaded) playSelected();
+});
+$all("[data-res]").forEach(b => b.onclick = () => {
+  resolution = +b.dataset.res;
+  $all("[data-res]").forEach(x => x.classList.toggle("active", x === b));
+  if (selected && !selected.downloaded) playSelected();
+});
+
+$("#btn-autonext").onclick = () => {
+  autoNext = !autoNext;
+  $("#btn-autonext").textContent = autoNext ? "Auto Next On" : "Auto Next Off";
+  $("#btn-autonext").style.color = autoNext ? "var(--accent)" : "";
+};
+video.onended = () => { if (autoNext) $("#btn-next").click(); };
+
+function epIndex() {
+  if (!selected) return -1;
+  return currentEps().findIndex(e => e.episode_session === selected.episode_session);
+}
+$("#btn-prev").onclick = () => {
+  const i = epIndex();
+  if (i > 0) selectEp(currentEps()[i - 1], true);
+};
+$("#btn-next").onclick = () => {
+  const i = epIndex();
+  const eps = currentEps();
+  if (i >= 0 && i < eps.length - 1) selectEp(eps[i + 1], true);
+};
+
+$("#btn-dl").onclick = async () => {
+  if (!selected) return;
+  $("#ep-status").textContent = "Downloading…";
+  try {
+    const { job_id } = await api("/api/watch/download", {
+      method: "POST",
+      body: JSON.stringify({
+        user_anime_id: USER_ANIME_ID,
+        anime_session: selected.anime_session,
+        episode_session: selected.episode_session,
+        episode: selected.episode,
+        audio, resolution,
+      }),
+    });
+    const job = await pollJob(job_id, { onProgress: j => {
+      $("#ep-status").textContent = j.total ? `${j.message} (${j.progress}/${j.total})` : (j.message || "");
+    }});
+    $("#ep-status").textContent = `Saved ${job.result.path}`;
+    await loadCatalog(false);
+  } catch (e) { $("#ep-status").textContent = e.message; }
+};
+
+$("#btn-del").onclick = async () => {
+  if (!selected?.media_id || !confirm("Delete local file?")) return;
+  await api(`/api/media/${selected.media_id}`, { method: "DELETE" });
+  destroyHls();
+  await loadCatalog(false);
+  $("#ep-status").textContent = "Deleted download";
+};
+
+window.addEventListener("beforeunload", destroyHls);
+loadCatalog(true);
+</script>
+{% endblock %}
