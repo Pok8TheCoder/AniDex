@@ -1,4 +1,4 @@
-"""Smoke tests for LocalFun web overhaul."""
+"""Smoke tests for AniDex web overhaul."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 class PickSourceTests(unittest.TestCase):
     def test_eng_not_fallback_to_jpn(self) -> None:
-        from localfun.services.animepahe import PaheSource, pick_source
+        from anidex.services.animepahe import PaheSource, pick_source
 
         sources = [
             PaheSource(url="j", resolution=1080, audio="jpn", fansub="A"),
@@ -21,7 +21,7 @@ class PickSourceTests(unittest.TestCase):
         self.assertEqual(pick_source(sources, resolution=1080, audio="eng").url, "e")
 
     def test_missing_dub_raises(self) -> None:
-        from localfun.services.animepahe import PaheSource, pick_source
+        from anidex.services.animepahe import PaheSource, pick_source
 
         sources = [PaheSource(url="j", resolution=1080, audio="jpn", fansub="A")]
         with self.assertRaises(RuntimeError) as ctx:
@@ -29,7 +29,7 @@ class PickSourceTests(unittest.TestCase):
         self.assertIn("ENG", str(ctx.exception).upper())
 
     def test_norm_audio_aliases(self) -> None:
-        from localfun.services.animepahe import PaheSource, pick_source
+        from anidex.services.animepahe import PaheSource, pick_source
 
         sources = [PaheSource(url="e", resolution=1080, audio="en", fansub="B")]
         self.assertEqual(pick_source(sources, audio="eng").url, "e")
@@ -42,17 +42,17 @@ class ApiSmokeTests(unittest.TestCase):
         cls._db = Path(cls._tmpdir.name) / "test.db"
         # Patch paths before importing app
         cls._patches = [
-            mock.patch("localfun.paths.db_path", return_value=cls._db),
+            mock.patch("anidex.paths.db_path", return_value=cls._db),
             mock.patch(
-                "localfun.paths.app_data_dir",
+                "anidex.paths.app_data_dir",
                 return_value=Path(cls._tmpdir.name),
             ),
         ]
         for p in cls._patches:
             p.start()
 
-        from localfun.db import init_db
-        from localfun.web.app import app
+        from anidex.db import init_db
+        from anidex.web.app import app
 
         init_db()
         cls.client = TestClient(app)
@@ -66,7 +66,7 @@ class ApiSmokeTests(unittest.TestCase):
     def test_meta(self) -> None:
         r = self.client.get("/api/meta")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json()["app"], "LocalFun")
+        self.assertEqual(r.json()["app"], "AniDex")
 
     def test_profile_and_onboarding(self) -> None:
         r = self.client.get("/api/profile")
@@ -117,15 +117,15 @@ class ApiSmokeTests(unittest.TestCase):
     def test_meta_no_home_leak_shape(self) -> None:
         r = self.client.get("/api/meta")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json()["app"], "LocalFun")
+        self.assertEqual(r.json()["app"], "AniDex")
 
     def test_docs_disabled(self) -> None:
         self.assertEqual(self.client.get("/docs").status_code, 404)
         self.assertEqual(self.client.get("/openapi.json").status_code, 404)
 
     def test_lan_requires_login(self) -> None:
-        from localfun.web import security as sec
-        from localfun.web import auth as lf_auth
+        from anidex.web import security as sec
+        from anidex.web import auth as lf_auth
 
         sec.enable_lan_mode()
         lf_auth.ensure_auth_defaults()
@@ -150,8 +150,8 @@ class ApiSmokeTests(unittest.TestCase):
                 self.assertEqual(body.get("db_path"), "(local only)")
 
     def test_lan_lockout_after_three_fails(self) -> None:
-        from localfun.web import security as sec
-        from localfun.web import auth as lf_auth
+        from anidex.web import security as sec
+        from anidex.web import auth as lf_auth
 
         sec.enable_lan_mode()
         lf_auth.ensure_auth_defaults()
@@ -182,7 +182,7 @@ class ApiSmokeTests(unittest.TestCase):
         self.assertEqual(r.status_code, 404)
 
     def test_hls_session_clear_playlist(self) -> None:
-        from localfun.services.stream_sessions import STREAM_STORE
+        from anidex.services.stream_sessions import STREAM_STORE
 
         playlist = (
             "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n"
@@ -206,7 +206,7 @@ class ApiSmokeTests(unittest.TestCase):
                 return FakeResp(text=playlist)
 
         with mock.patch(
-            "localfun.services.stream_sessions._curl_session",
+            "anidex.services.stream_sessions._curl_session",
             return_value=FakeHttp(),
         ):
             session = STREAM_STORE.create(

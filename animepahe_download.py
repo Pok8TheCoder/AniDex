@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from localfun.services.anime_download import download_episode
+from anidex.services.anime_download import download_episode
 
 
 def main(argv: list[str] | None = None) -> int:

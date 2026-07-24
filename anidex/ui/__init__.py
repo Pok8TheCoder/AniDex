@@ -1,0 +1,1 @@
+"""AniDex UI package."""

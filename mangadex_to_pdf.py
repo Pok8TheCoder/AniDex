@@ -28,7 +28,7 @@ ProgressCb = Callable[[int, int, str], None]
 SESSION = requests.Session()
 SESSION.headers.update(
     {
-        "User-Agent": "LocalFun/1.0 (personal archival; +local)",
+        "User-Agent": "AniDex/1.0 (personal archival; +local)",
         "Accept": "application/json,image/*",
     }
 )

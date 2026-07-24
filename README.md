@@ -1,4 +1,4 @@
-# LocalFun
+# AniDex
 
 Desktop anime & manga tracker. **Local SQLite is source of truth** — your lists stay on this PC. Pull metadata from MAL / MangaDex when needed; optional MAL OAuth + XML import/export.
 
@@ -28,7 +28,7 @@ pip install -r requirements.txt
 python app.py
 ```
 
-Opens on **localhost only** (`127.0.0.1:8787`). Data lives in `%APPDATA%\LocalFun\` (`localfun.db`, cover cache, MAL tokens) — not in this repo.
+Opens on **localhost only** (`127.0.0.1:8787`). Data lives in `%APPDATA%\AniDex\` (`anidex.db`, cover cache, MAL tokens) — not in this repo.
 
 ### Phone / LAN preview
 
@@ -38,6 +38,31 @@ python app.py --lan
 
 Prints a LAN URL like `http://192.168.x.x:8787/`. On your phone (same Wi‑Fi), open it and log in — default **user** / **pwd** (change in Settings). Passwords are stored with PBKDF2 (never plaintext). Three failed logins locks that IP until you unlock it from Settings on the PC.
 
+### Peer sync (PC ↔ Termux)
+
+Mesh-merge libraries and media between two AniDex instances on the same Wi‑Fi. Progress uses **max** (never silently clobber watched/read progress); list status uses last-write-wins.
+
+1. On **both** devices: `python app.py --lan`
+2. Open **Settings → Peer sync** on each device
+3. Copy the **sync token** from one device onto the other (must match)
+4. Set **Peer URL** to the other device’s LAN URL (e.g. `http://192.168.1.10:8787`)
+5. Tap **Sync now** (or run CLI below)
+
+Synced: anime/manga list entries, episode/chapter progress, scores, manga read page positions, anime MP4 downloads, offline manga chapters.
+
+Not synced: HLS stream sessions, MAL OAuth tokens, Cloudflare browser profile.
+
+CLI:
+
+```powershell
+python -m anidex.sync identity
+python -m anidex.sync set-peer http://192.168.x.x:8787
+python -m anidex.sync set-token <same-token-as-peer>
+python -m anidex.sync sync
+# or:
+python -m anidex.sync sync --peer http://192.168.x.x:8787
+```
+
 ### GitHub / secrets
 
 Do **not** commit:
@@ -45,13 +70,13 @@ Do **not** commit:
 - `output/` downloads
 - `.env`, tokens, or any `*.db`
 
-`.gitignore` already excludes these. MAL OAuth tokens and the SQLite DB stay under `%APPDATA%\LocalFun\`.
+`.gitignore` already excludes these. MAL OAuth tokens and the SQLite DB stay under `%APPDATA%\AniDex\`.
 
 ## MAL API (search + OAuth)
 
 1. Open [MAL API config](https://myanimelist.net/apiconfig) and create a client
 2. Set **App Redirect URL** to exactly: `http://127.0.0.1:58432/callback`
-3. Paste the **Client ID** in LocalFun → Settings → Save
+3. Paste the **Client ID** in AniDex → Settings → Save
 4. Use **Connect with OAuth…** for live sync, or **Import XML** anytime
 
 Export your list from MAL’s site if you prefer file-based restore.
@@ -71,7 +96,7 @@ Requires **Google Chrome** installed (for AnimePahe). Episode downloads use buil
    `https://animepahe.pw/play/<anime-session>/<episode-session>`
 3. Pick quality/audio → **Download MP4**
 
-LocalFun loads pages through a saved Chrome profile (real navigation, not the ad player), resolves Kwik → m3u8, then downloads segments in Python and saves MP4. You can also paste a **Kwik URL** directly.
+AniDex loads pages through a saved Chrome profile (real navigation, not the ad player), resolves Kwik → m3u8, then downloads segments in Python and saves MP4. You can also paste a **Kwik URL** directly.
 
 CLI:
 

@@ -1,0 +1,350 @@
+{% extends "base.html" %}
+{% block title %}Anime — AniDex{% endblock %}
+{% block content %}
+<div class="row" style="margin-bottom:12px">
+  <div class="row" id="filters"></div>
+  <div style="flex:1"></div>
+  <button class="btn primary" id="btn-search">Search MAL…</button>
+</div>
+
+<div id="view-discover" style="display:none">
+  <p class="muted" id="taste-lbl" style="margin-top:-4px">Personalized picks from MAL + your library</p>
+  <p class="status" id="discover-status">Loading Discover…</p>
+  <section class="discover-rail">
+    <div class="discover-rail-head"><h2>For You</h2><span class="muted">Genre + fuzzy match</span></div>
+    <div class="discover-scroll" id="for-you"></div>
+  </section>
+  <section class="discover-rail">
+    <div class="discover-rail-head"><h2>This season</h2><span class="muted" id="season-lbl"></span></div>
+    <div class="discover-scroll" id="season"></div>
+  </section>
+  <section class="discover-rail">
+    <div class="discover-rail-head"><h2>Popular</h2><span class="muted">MAL by popularity</span></div>
+    <div class="discover-scroll" id="popular"></div>
+  </section>
+  <section class="discover-rail">
+    <div class="discover-rail-head"><h2>Highly rated</h2><span class="muted">Top MAL scores</span></div>
+    <div class="discover-scroll" id="top-rated"></div>
+  </section>
+</div>
+
+<div id="view-library" class="split">
+  <div>
+    <div class="grid" id="grid"></div>
+    <p class="muted" id="empty" style="display:none;padding:24px">No anime yet — search MAL to add some.</p>
+  </div>
+  <div class="panel" id="detail">
+    <div class="section">Detail</div>
+    <h2 id="d-title" style="margin:0 0 6px">Select an anime</h2>
+    <div class="muted" id="d-meta"></div>
+    <p class="muted" id="d-syn" style="max-height:120px;overflow:auto"></p>
+    <div class="field"><label>Status</label><select id="d-status"></select></div>
+    <div class="row">
+      <div class="field" style="flex:1"><label>Eps</label><input type="number" id="d-progress" min="0" /></div>
+      <div class="field" style="flex:1"><label>Score</label><input type="number" id="d-score" min="0" max="10" /></div>
+    </div>
+    <div class="field"><label>Notes</label><textarea id="d-notes" rows="3"></textarea></div>
+    <div class="row">
+      <button class="btn primary" id="d-save" disabled>Save</button>
+      <button class="btn danger" id="d-remove" disabled>Remove</button>
+      <button class="btn primary" id="d-watch" disabled>Watch on AnimePahe…</button>
+    </div>
+    <p class="status" id="d-status-msg"></p>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="search-modal">
+  <div class="modal">
+    <h3 style="margin-top:0">Search MAL</h3>
+    <div class="row">
+      <input id="search-q" placeholder="Title…" style="flex:1" />
+      <button class="btn primary" id="search-go">Search</button>
+      <button class="btn ghost" id="search-close">Close</button>
+    </div>
+    <div class="field" style="margin-top:10px">
+      <label>Add as</label>
+      <select id="search-status"></select>
+    </div>
+    <div id="search-results"></div>
+    <p class="status" id="search-status-msg"></p>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="add-modal">
+  <div class="modal">
+    <h3 style="margin-top:0" id="add-title">Add to list</h3>
+    <p class="muted" id="add-meta"></p>
+    <p class="muted" id="add-syn" style="max-height:100px;overflow:auto"></p>
+    <div class="field"><label>Add as</label><select id="add-status"></select></div>
+    <div class="row">
+      <button class="btn primary" id="add-go">Add</button>
+      <button class="btn ghost" id="add-close">Close</button>
+    </div>
+    <p class="status" id="add-msg"></p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const STATUSES = [
+  ["all","All"],["watching","Watching"],["completed","Completed"],
+  ["on_hold","On Hold"],["dropped","Dropped"],["plan_to_watch","Plan to Watch"]
+];
+const VIEW_KEY = "anidex.anime.view";
+let currentView = localStorage.getItem(VIEW_KEY) || "discover";
+let currentStatus = "all";
+let selected = null;
+let entries = [];
+let pending = null;
+
+const statusSel = $("#d-status");
+const searchStatus = $("#search-status");
+const addStatus = $("#add-status");
+STATUSES.filter(s => s[0] !== "all").forEach(([v,l]) => {
+  statusSel.insertAdjacentHTML("beforeend", `<option value="${v}">${l}</option>`);
+  searchStatus.insertAdjacentHTML("beforeend", `<option value="${v}">${l}</option>`);
+  addStatus.insertAdjacentHTML("beforeend", `<option value="${v}">${l}</option>`);
+});
+
+const filters = $("#filters");
+function setActiveChip(el) {
+  $all(".chip", filters).forEach(x => x.classList.remove("active"));
+  el.classList.add("active");
+}
+const disc = document.createElement("button");
+disc.className = "btn chip" + (currentView === "discover" ? " active" : "");
+disc.textContent = "Discover";
+disc.onclick = () => { currentView = "discover"; localStorage.setItem(VIEW_KEY, currentView); setActiveChip(disc); showView(); };
+filters.appendChild(disc);
+STATUSES.forEach(([v,l]) => {
+  const b = document.createElement("button");
+  b.className = "btn chip" + (currentView !== "discover" && v === currentStatus ? " active" : "");
+  b.textContent = l;
+  b.onclick = () => {
+    currentView = "library";
+    currentStatus = v;
+    localStorage.setItem(VIEW_KEY, currentView);
+    setActiveChip(b);
+    showView();
+  };
+  filters.appendChild(b);
+});
+const upc = document.createElement("a");
+upc.className = "btn chip";
+upc.href = "/upcoming";
+upc.textContent = "Upcoming";
+upc.title = "Season countdowns";
+filters.appendChild(upc);
+
+function showView() {
+  const discOn = currentView === "discover";
+  $("#view-discover").style.display = discOn ? "block" : "none";
+  $("#view-library").style.display = discOn ? "none" : "grid";
+  if (discOn) loadDiscover();
+  else loadLibrary();
+}
+
+function esc(s) {
+  return String(s || "").replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
+}
+
+async function loadLibrary() {
+  entries = await api(`/api/anime?status=${encodeURIComponent(currentStatus)}`);
+  const grid = $("#grid");
+  grid.innerHTML = "";
+  $("#empty").style.display = entries.length ? "none" : "block";
+  entries.forEach(e => {
+    const card = document.createElement("div");
+    card.className = "card" + (selected && selected.user_anime_id === e.user_anime_id ? " selected" : "");
+    card.innerHTML = `
+      <img src="${e.cover_url || ""}" alt="" onerror="this.style.opacity=.2" />
+      <div class="meta">
+        <div class="title">${e.display_title}</div>
+        <div class="sub">${e.list_status.replaceAll("_"," ")} · ${e.progress}${e.episodes ? "/"+e.episodes : ""}</div>
+      </div>`;
+    card.onclick = () => show(e);
+    grid.appendChild(card);
+  });
+}
+
+function show(e) {
+  selected = e;
+  currentView = "library";
+  localStorage.setItem(VIEW_KEY, currentView);
+  $("#view-discover").style.display = "none";
+  $("#view-library").style.display = "grid";
+  $("#d-title").textContent = e.display_title;
+  $("#d-meta").textContent = [e.media_type, e.airing_status, e.mal_id ? "MAL "+e.mal_id : null].filter(Boolean).join(" · ");
+  $("#d-syn").textContent = e.synopsis || "No synopsis.";
+  statusSel.value = e.list_status;
+  $("#d-progress").value = e.progress;
+  $("#d-score").value = e.score;
+  $("#d-notes").value = e.notes || "";
+  ["d-save","d-remove","d-watch"].forEach(id => $(`#${id}`).disabled = false);
+  loadLibrary();
+}
+
+function cardHtml(it) {
+  const score = it.mean_score != null ? Number(it.mean_score).toFixed(2) : "—";
+  const badge = it.in_library
+    ? `<span class="discover-badge">${esc((it.list_status || "listed").replaceAll("_"," "))}</span>`
+    : (it.reason ? `<span class="discover-badge soft">${esc(it.reason)}</span>` : "");
+  const genres = (it.genres || []).slice(0, 3).join(" · ");
+  return `
+    <button type="button" class="discover-card" data-mal="${it.mal_id}">
+      <img src="${esc(it.cover_url || "")}" alt="" loading="lazy" onerror="this.style.opacity=.25" />
+      <div class="discover-card-body">
+        <div class="title">${esc(it.display_title)}</div>
+        <div class="sub">${score} · ${(it.media_type || "").toUpperCase() || "—"}</div>
+        ${badge}
+        ${genres ? `<div class="sub genres">${esc(genres)}</div>` : ""}
+      </div>
+    </button>`;
+}
+
+function fillRail(id, items, emptyMsg) {
+  const host = $(`#${id}`);
+  if (!items || !items.length) {
+    host.innerHTML = `<p class="muted discover-empty">${esc(emptyMsg)}</p>`;
+    return;
+  }
+  host.innerHTML = items.map(cardHtml).join("");
+  $all(".discover-card", host).forEach((el, i) => { el.onclick = () => openAdd(items[i]); });
+}
+
+function openAdd(it) {
+  pending = it;
+  $("#add-title").textContent = it.display_title;
+  $("#add-meta").textContent = [
+    it.media_type, it.airing_status,
+    it.mean_score != null ? `MAL ${Number(it.mean_score).toFixed(2)}` : null,
+    (it.genres || []).slice(0, 5).join(", "),
+  ].filter(Boolean).join(" · ");
+  $("#add-syn").textContent = it.synopsis || "";
+  $("#add-go").disabled = !!it.in_library;
+  $("#add-msg").textContent = it.in_library
+    ? `Already on your list (${(it.list_status || "").replaceAll("_"," ")})`
+    : "";
+  $("#add-modal").classList.add("open");
+}
+
+$("#add-close").onclick = () => $("#add-modal").classList.remove("open");
+$("#add-modal").onclick = (e) => { if (e.target.id === "add-modal") $("#add-modal").classList.remove("open"); };
+$("#add-go").onclick = async () => {
+  if (!pending || pending.in_library) return;
+  $("#add-msg").textContent = "Adding…";
+  try {
+    await api("/api/anime/add", {
+      method: "POST",
+      body: JSON.stringify({
+        mal_id: pending.mal_id,
+        title: pending.title,
+        title_english: pending.title_english,
+        media_type: pending.media_type,
+        airing_status: pending.airing_status,
+        episodes: pending.episodes,
+        mean_score: pending.mean_score,
+        cover_url: pending.cover_url,
+        synopsis: pending.synopsis,
+        list_status: addStatus.value,
+      }),
+    });
+    $("#add-msg").textContent = "Added";
+    pending.in_library = true;
+    $("#add-go").disabled = true;
+    setTimeout(() => $("#add-modal").classList.remove("open"), 600);
+  } catch (e) { $("#add-msg").textContent = e.message; }
+};
+
+async function loadDiscover() {
+  const status = $("#discover-status");
+  status.textContent = "Loading Discover…";
+  try {
+    const data = await api("/api/discover");
+    const genres = (data.top_genres || []).map(g => g[0]).slice(0, 5).join(" · ");
+    $("#taste-lbl").textContent = genres
+      ? `Your taste: ${genres}`
+      : (data.library_count ? "Building taste from your list…" : "Add anime to personalize For You");
+    const s = data.season || {};
+    $("#season-lbl").textContent = s.season
+      ? `${String(s.season).replace(/^./, c => c.toUpperCase())} ${s.year || ""}`
+      : "";
+    fillRail("for-you", data.for_you, "No fresh picks yet — set MAL Client ID or grow your list.");
+    fillRail("season", data.season_picks, "No season titles loaded.");
+    fillRail("popular", data.popular, "Could not load popular rankings.");
+    fillRail("top-rated", data.top_rated, "Could not load top-rated rankings.");
+    status.textContent = (data.errors && data.errors[0]) || "";
+  } catch (e) {
+    status.textContent = e.message;
+  }
+}
+
+$("#d-save").onclick = async () => {
+  if (!selected) return;
+  try {
+    selected = await api(`/api/anime/${selected.user_anime_id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        list_status: statusSel.value,
+        progress: +$("#d-progress").value || 0,
+        score: +$("#d-score").value || 0,
+        notes: $("#d-notes").value,
+      }),
+    });
+    $("#d-status-msg").textContent = "Saved";
+    loadLibrary();
+  } catch (e) { $("#d-status-msg").textContent = e.message; }
+};
+$("#d-remove").onclick = async () => {
+  if (!selected || !confirm("Remove from list?")) return;
+  await api(`/api/anime/${selected.user_anime_id}`, { method: "DELETE" });
+  selected = null;
+  $("#d-title").textContent = "Select an anime";
+  loadLibrary();
+};
+$("#d-watch").onclick = () => { if (selected) location.href = `/watch/${selected.user_anime_id}`; };
+
+const modal = $("#search-modal");
+$("#btn-search").onclick = () => modal.classList.add("open");
+$("#search-close").onclick = () => modal.classList.remove("open");
+$("#search-go").onclick = doSearch;
+$("#search-q").onkeydown = (e) => { if (e.key === "Enter") doSearch(); };
+async function doSearch() {
+  const q = $("#search-q").value.trim();
+  const box = $("#search-results");
+  const msg = $("#search-status-msg");
+  box.innerHTML = "";
+  if (!q) return;
+  msg.textContent = "Searching…";
+  try {
+    const hits = await api(`/api/anime/search?q=${encodeURIComponent(q)}`);
+    msg.textContent = `${hits.length} result(s)`;
+    hits.forEach(h => {
+      const div = document.createElement("div");
+      div.className = "search-hit";
+      div.innerHTML = `<strong>${h.title_english || h.title}</strong><div class="muted">${h.media_type || ""} · ${h.episodes || "?"} eps</div>`;
+      div.onclick = async () => {
+        msg.textContent = "Adding…";
+        const e = await api("/api/anime/add", {
+          method: "POST",
+          body: JSON.stringify({ ...h, list_status: searchStatus.value }),
+        });
+        modal.classList.remove("open");
+        currentView = "library";
+        localStorage.setItem(VIEW_KEY, currentView);
+        showView();
+        show(e);
+      };
+      box.appendChild(div);
+    });
+  } catch (e) { msg.textContent = e.message; }
+}
+
+api("/api/profile").then(p => {
+  if (p.display_name) $("#user-sub").textContent = `Hey ${p.display_name} — lists stay on this PC`;
+}).catch(() => {});
+showView();
+</script>
+{% endblock %}

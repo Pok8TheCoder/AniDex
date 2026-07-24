@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LocalFun — local web app (anime & manga tracker)."""
+"""AniDex — local web app (anime & manga tracker)."""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ def _lan_ips() -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="LocalFun web server")
+    parser = argparse.ArgumentParser(description="AniDex web server")
     parser.add_argument(
         "--host",
         default=HOST,
@@ -71,7 +71,7 @@ def main() -> int:
     host = "0.0.0.0" if args.lan else args.host
     lan = False
     if args.lan or host in ("0.0.0.0", "::"):
-        from localfun.web.security import enable_lan_mode
+        from anidex.web.security import enable_lan_mode
 
         enable_lan_mode()
         lan = True
@@ -80,7 +80,7 @@ def main() -> int:
     local_url = f"http://127.0.0.1:{args.port}/"
     open_url = local_url
 
-    print(f"LocalFun listening on http://{host}:{args.port}/")
+    print(f"AniDex listening on http://{host}:{args.port}/")
     print(f"  This PC: {local_url}")
     if lan:
         ips = _lan_ips() or ["<your-lan-ip>"]
@@ -104,7 +104,7 @@ def main() -> int:
     import uvicorn
 
     uvicorn.run(
-        "localfun.web.app:app",
+        "anidex.web.app:app",
         host=host,
         port=args.port,
         log_level="info",

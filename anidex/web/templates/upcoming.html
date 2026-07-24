@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+{% block title %}Upcoming Anime — AniDex{% endblock %}
+{% block content %}
+<div class="row" style="margin-bottom:12px;flex-wrap:wrap;gap:10px">
+  <div>
+    <a class="btn ghost" href="/anime">← Anime</a>
+    <div class="section" style="margin:8px 0 0">Upcoming Anime</div>
+    <div class="muted" id="season-lbl">Loading season…</div>
+  </div>
+  <div style="flex:1"></div>
+  <input id="search" placeholder="Search titles / genres…" style="width:min(280px,100%)" />
+  <div class="row" id="sort-filters"></div>
+</div>
+<p class="muted" id="taste-lbl" style="margin-top:-4px"></p>
+<p class="status" id="status">Fetching MAL season schedule…</p>
+<div class="upcoming-list" id="list"></div>
+{% endblock %}
+{% block scripts %}
+<script>
+const SORTS = [
+  ["for_you", "For You"],
+  ["time", "Soonest"],
+  ["name", "Name"],
+];
+let currentSort = localStorage.getItem("anidex.upcoming.sort") || "for_you";
+let searchTimer = null;
+
+const filters = $("#sort-filters");
+SORTS.forEach(([v, l]) => {
+  const b = document.createElement("button");
+  b.className = "btn chip" + (v === currentSort ? " active" : "");
+  b.textContent = l;
+  b.onclick = () => {
+    currentSort = v;
+    localStorage.setItem("anidex.upcoming.sort", v);
+    $all(".chip", filters).forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    load();
+  };
+  filters.appendChild(b);
+});
+
+$("#search").addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(load, 250);
+});
+
+function fmtWhen(iso) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, {
+      weekday: "short", month: "short", day: "numeric",
+      hour: "2-digit", minute: "2-digit",
+    });
+  } catch (_) { return iso; }
+}
+
+function kindLabel(kind) {
+  if (kind === "premiere") return "Premiere";
+  if (kind === "episode") return "Next episode";
+  return "Schedule";
+}
+
+async function load() {
+  const status = $("#status");
+  const list = $("#list");
+  const q = ($("#search").value || "").trim();
+  status.textContent = "Loading countdowns…";
+  list.innerHTML = "";
+  try {
+    const data = await api(
+      `/api/upcoming?sort=${encodeURIComponent(currentSort)}&next_season=true&q=${encodeURIComponent(q)}`
+    );
+    const s = data.season || {};
+    const ns = data.next_season;
+    $("#season-lbl").textContent = [
+      `${(s.season || "").replace(/^./, c => c.toUpperCase())} ${s.year || ""}`,
+      ns ? `+ ${(ns.season || "").replace(/^./, c => c.toUpperCase())} ${ns.year || ""}` : "",
+      `· ${data.count} titles`,
+    ].filter(Boolean).join(" ");
+
+    if (data.top_genres && data.top_genres.length) {
+      $("#taste-lbl").textContent = "Your taste signals: " + data.top_genres.map(([g]) => g).join(", ");
+    } else {
+      $("#taste-lbl").textContent = "Add more anime to your list to improve For You ranking.";
+    }
+
+    status.textContent = "";
+    if (!data.items.length) {
+      status.textContent = q ? "No matches." : "No upcoming titles found for this season.";
+      return;
+    }
+
+    data.items.forEach((it, idx) => {
+      const card = document.createElement("article");
+      card.className = "upcoming-card" + (it.looking_forward >= 55 ? " highlight" : "");
+      const genres = (it.genres || []).slice(0, 4).join(" · ");
+      const reason = it.reason
+        ? `<span class="upc-reason">${it.reason}</span>`
+        : "";
+      card.innerHTML = `
+        <div class="upc-rank">${idx + 1}</div>
+        <img class="upc-cover" src="${it.cover_url || ""}" alt="" onerror="this.style.opacity=.15" />
+        <div class="upc-body">
+          <div class="upc-title">${it.display_title}</div>
+          <div class="upc-meta muted">${[it.media_type, it.airing_status, genres].filter(Boolean).join(" · ")}</div>
+          <div class="upc-reasons">${reason}</div>
+        </div>
+        <div class="upc-count">
+          <div class="upc-kind muted">${kindLabel(it.countdown_kind)}</div>
+          <div class="upc-timer">${it.countdown.label}</div>
+          <div class="upc-when muted">${fmtWhen(it.airs_at)}</div>
+        </div>
+        <div class="upc-actions">
+          <button class="btn" type="button" data-add>Add to Plan</button>
+        </div>`;
+      card.querySelector("[data-add]").onclick = async () => {
+        const btn = card.querySelector("[data-add]");
+        btn.disabled = true;
+        try {
+          await api("/api/anime/add", {
+            method: "POST",
+            body: JSON.stringify({
+              mal_id: it.mal_id,
+              title: it.title,
+              title_english: it.title_english,
+              media_type: it.media_type,
+              airing_status: it.airing_status,
+              episodes: it.episodes,
+              mean_score: it.mean_score,
+              cover_url: it.cover_url,
+              synopsis: it.synopsis,
+              list_status: "plan_to_watch",
+            }),
+          });
+          btn.textContent = "Added";
+        } catch (e) {
+          btn.disabled = false;
+          btn.textContent = "Retry";
+          status.textContent = e.message;
+        }
+      };
+      list.appendChild(card);
+    });
+
+    startTicker(data.items);
+  } catch (e) {
+    status.textContent = e.message;
+  }
+}
+
+let tickTimer = null;
+function startTicker(items) {
+  if (tickTimer) clearInterval(tickTimer);
+  const cards = $all(".upcoming-card");
+  tickTimer = setInterval(() => {
+    const now = Date.now();
+    items.forEach((it, i) => {
+      const el = cards[i]?.querySelector(".upc-timer");
+      if (!el || !it.airs_at) return;
+      const secs = Math.floor((new Date(it.airs_at).getTime() - now) / 1000);
+      if (secs < 0) { el.textContent = "Airing now"; return; }
+      const d = Math.floor(secs / 86400);
+      const h = Math.floor((secs % 86400) / 3600);
+      const m = Math.floor((secs % 3600) / 60);
+      el.textContent = d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`;
+    });
+  }, 30000);
+}
+
+load();
+</script>
+{% endblock %}

@@ -1,0 +1,603 @@
+{% extends "base.html" %}
+{% block title %}Manga — AniDex{% endblock %}
+{% block content %}
+<div class="row" style="margin-bottom:12px">
+  <div class="row" id="filters"></div>
+  <div style="flex:1"></div>
+  <button class="btn primary" id="btn-search">Search MangaDex…</button>
+</div>
+
+<div id="view-discover" style="display:none">
+  <p class="muted" id="taste-lbl" style="margin-top:-4px">Personalized picks from MangaDex + your library</p>
+  <p class="status" id="discover-status">Loading Discover…</p>
+  <section class="discover-rail">
+    <div class="discover-rail-head"><h2>For You</h2><span class="muted">Tags + fuzzy match</span></div>
+    <div class="discover-scroll" id="for-you"></div>
+  </section>
+  <section class="discover-rail">
+    <div class="discover-rail-head"><h2>Recently updated</h2><span class="muted">New chapters on MangaDex</span></div>
+    <div class="discover-scroll" id="recent"></div>
+  </section>
+  <section class="discover-rail">
+    <div class="discover-rail-head"><h2>Popular</h2><span class="muted">By follows</span></div>
+    <div class="discover-scroll" id="popular"></div>
+  </section>
+  <section class="discover-rail">
+    <div class="discover-rail-head"><h2>Top rated</h2><span class="muted">MangaDex rating</span></div>
+    <div class="discover-scroll" id="top-rated"></div>
+  </section>
+</div>
+
+<div id="view-library" class="split" style="grid-template-columns: 1fr 380px">
+  <div>
+    <div class="grid" id="grid"></div>
+    <p class="muted" id="empty" style="display:none;padding:24px">No manga yet — search MangaDex to add some.</p>
+  </div>
+  <div class="panel" id="detail">
+    <div class="section">Detail</div>
+    <h2 id="d-title" style="margin:0 0 6px">Select a manga</h2>
+    <div class="muted" id="d-meta"></div>
+    <p class="muted" id="d-syn" style="max-height:80px;overflow:auto"></p>
+    <div class="field"><label>Status</label><select id="d-status"></select></div>
+    <div class="row">
+      <div class="field" style="flex:1"><label>Chapters read</label><input type="number" id="d-progress" min="0" /></div>
+      <div class="field" style="flex:1"><label>Score</label><input type="number" id="d-score" min="0" max="10" /></div>
+    </div>
+    <div class="field"><label>Notes</label><textarea id="d-notes" rows="2"></textarea></div>
+    <div class="row">
+      <button class="btn primary" id="d-save" disabled>Save</button>
+      <button class="btn danger" id="d-remove" disabled>Remove</button>
+    </div>
+    <p class="status" id="d-status-msg"></p>
+
+    <div class="section">Chapters</div>
+    <div class="row" style="margin-bottom:8px">
+      <select id="ch-lang" style="width:auto">
+        <option value="en" selected>EN</option>
+        <option value="ja">JA</option>
+        <option value="es">ES</option>
+        <option value="pt-br">PT-BR</option>
+      </select>
+      <button class="btn" id="ch-refresh" disabled>Refresh list</button>
+    </div>
+    <div id="ch-list" class="chapter-list"></div>
+    <p class="muted" id="ch-msg">Select a title to load chapters.</p>
+
+    <details style="margin-top:12px">
+      <summary class="muted">Advanced: paste chapter URL / PDF</summary>
+      <div class="field" style="margin-top:8px">
+        <div class="row">
+          <input id="ch-url" placeholder="https://mangadex.org/chapter/…" style="flex:1" />
+          <button class="btn" id="d-read-url" disabled>Read</button>
+          <button class="btn" id="d-pdf" disabled>PDF</button>
+        </div>
+      </div>
+    </details>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="add-modal">
+  <div class="modal">
+    <h3 style="margin-top:0" id="add-title">Add to list</h3>
+    <p class="muted" id="add-meta"></p>
+    <p class="muted" id="add-syn" style="max-height:100px;overflow:auto"></p>
+    <div class="field"><label>Add as</label><select id="add-status"></select></div>
+    <div class="row">
+      <button class="btn primary" id="add-go">Add</button>
+      <button class="btn ghost" id="add-close">Close</button>
+    </div>
+    <p class="status" id="add-msg"></p>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="search-modal">
+  <div class="modal">
+    <h3 style="margin-top:0">Search MangaDex</h3>
+    <div class="row">
+      <input id="search-q" placeholder="Title…" style="flex:1" />
+      <button class="btn primary" id="search-go">Search</button>
+      <button class="btn ghost" id="search-close">Close</button>
+    </div>
+    <div class="field" style="margin-top:10px">
+      <label>Add as</label>
+      <select id="search-status"></select>
+    </div>
+    <div id="search-results"></div>
+    <p class="status" id="search-status-msg"></p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const STATUSES = [
+  ["all","All"],["reading","Reading"],["completed","Completed"],
+  ["on_hold","On Hold"],["dropped","Dropped"],["plan_to_read","Plan to Read"]
+];
+const VIEW_KEY = "anidex.manga.view";
+let currentView = localStorage.getItem(VIEW_KEY) || "discover";
+let currentStatus = "all";
+let selected = null;
+let pendingAdd = null;
+
+const statusSel = $("#d-status");
+const searchStatus = $("#search-status");
+const addStatus = $("#add-status");
+STATUSES.filter(s => s[0] !== "all").forEach(([v,l]) => {
+  statusSel.insertAdjacentHTML("beforeend", `<option value="${v}">${l}</option>`);
+  searchStatus.insertAdjacentHTML("beforeend", `<option value="${v}">${l}</option>`);
+  addStatus.insertAdjacentHTML("beforeend", `<option value="${v}">${l}</option>`);
+});
+const filters = $("#filters");
+function setActiveChip(el) {
+  $all(".chip", filters).forEach(x => x.classList.remove("active"));
+  el.classList.add("active");
+}
+const disc = document.createElement("button");
+disc.className = "btn chip" + (currentView === "discover" ? " active" : "");
+disc.textContent = "Discover";
+disc.onclick = () => { currentView = "discover"; localStorage.setItem(VIEW_KEY, currentView); setActiveChip(disc); showView(); };
+filters.appendChild(disc);
+STATUSES.forEach(([v,l]) => {
+  const b = document.createElement("button");
+  b.className = "btn chip";
+  if (currentView !== "discover" && v === currentStatus) b.classList.add("active");
+  b.textContent = l;
+  b.onclick = () => {
+    currentView = "library";
+    currentStatus = v;
+    localStorage.setItem(VIEW_KEY, currentView);
+    setActiveChip(b);
+    showView();
+  };
+  filters.appendChild(b);
+});
+const upc = document.createElement("a");
+upc.className = "btn chip";
+upc.href = "/manga/upcoming";
+upc.textContent = "Upcoming";
+upc.title = "Chapter update trackers";
+filters.appendChild(upc);
+
+function showView() {
+  const discOn = currentView === "discover";
+  $("#view-discover").style.display = discOn ? "block" : "none";
+  $("#view-library").style.display = discOn ? "none" : "grid";
+  if (discOn) loadDiscover();
+  else load();
+}
+
+function esc(s) {
+  return String(s || "").replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
+}
+
+function cardHtml(it) {
+  const badge = it.in_library
+    ? `<span class="discover-badge">${esc((it.list_status || "listed").replaceAll("_"," "))}</span>`
+    : (it.reason ? `<span class="discover-badge soft">${esc(it.reason)}</span>` : "");
+  const genres = (it.genres || []).slice(0, 3).join(" · ");
+  return `
+    <button type="button" class="discover-card">
+      <img src="${esc(it.cover_url || "")}" alt="" loading="lazy" onerror="this.style.opacity=.25" />
+      <div class="discover-card-body">
+        <div class="title">${esc(it.display_title)}</div>
+        <div class="sub">${esc([it.status, it.year].filter(Boolean).join(" · ") || "—")}</div>
+        ${badge}
+        ${genres ? `<div class="sub genres">${esc(genres)}</div>` : ""}
+      </div>
+    </button>`;
+}
+function fillRail(id, items, emptyMsg) {
+  const host = $(`#${id}`);
+  if (!items || !items.length) {
+    host.innerHTML = `<p class="muted discover-empty">${esc(emptyMsg)}</p>`;
+    return;
+  }
+  host.innerHTML = items.map(cardHtml).join("");
+  $all(".discover-card", host).forEach((el, i) => { el.onclick = () => openAdd(items[i]); });
+}
+function openAdd(it) {
+  pendingAdd = it;
+  $("#add-title").textContent = it.display_title;
+  $("#add-meta").textContent = [it.status, it.year, (it.genres || []).slice(0, 5).join(", ")].filter(Boolean).join(" · ");
+  $("#add-syn").textContent = it.synopsis || "";
+  $("#add-go").disabled = !!it.in_library;
+  $("#add-msg").textContent = it.in_library
+    ? `Already on your list (${(it.list_status || "").replaceAll("_"," ")})`
+    : "";
+  $("#add-modal").classList.add("open");
+}
+$("#add-close").onclick = () => $("#add-modal").classList.remove("open");
+$("#add-modal").onclick = (e) => { if (e.target.id === "add-modal") $("#add-modal").classList.remove("open"); };
+$("#add-go").onclick = async () => {
+  if (!pendingAdd || pendingAdd.in_library) return;
+  $("#add-msg").textContent = "Adding…";
+  try {
+    await api("/api/manga/add", {
+      method: "POST",
+      body: JSON.stringify({
+        mangadex_id: pendingAdd.mangadex_id,
+        title: pendingAdd.title,
+        title_english: pendingAdd.title_english,
+        status: pendingAdd.status,
+        year: pendingAdd.year,
+        cover_url: pendingAdd.cover_url,
+        synopsis: pendingAdd.synopsis,
+        list_status: addStatus.value,
+      }),
+    });
+    $("#add-msg").textContent = "Added";
+    pendingAdd.in_library = true;
+    $("#add-go").disabled = true;
+    setTimeout(() => $("#add-modal").classList.remove("open"), 600);
+  } catch (e) { $("#add-msg").textContent = e.message; }
+};
+async function loadDiscover() {
+  const status = $("#discover-status");
+  status.textContent = "Loading Discover…";
+  try {
+    const data = await api("/api/manga/discover");
+    const genres = (data.top_genres || []).map(g => g[0]).slice(0, 5).join(" · ");
+    $("#taste-lbl").textContent = genres
+      ? `Your taste: ${genres}`
+      : (data.library_count ? "Building taste from your list…" : "Add manga to personalize For You");
+    fillRail("for-you", data.for_you, "No fresh picks yet — grow your list.");
+    fillRail("recent", data.recent, "No recent updates.");
+    fillRail("popular", data.popular, "Could not load popular manga.");
+    fillRail("top-rated", data.top_rated, "Could not load top-rated manga.");
+    status.textContent = (data.errors && data.errors[0]) || "";
+  } catch (e) { status.textContent = e.message; }
+}
+
+async function load() {
+  const entries = await api(`/api/manga?status=${encodeURIComponent(currentStatus)}`);
+  const grid = $("#grid");
+  grid.innerHTML = "";
+  $("#empty").style.display = entries.length ? "none" : "block";
+  entries.forEach(e => {
+    const card = document.createElement("div");
+    card.className = "card" + (selected && selected.user_manga_id === e.user_manga_id ? " selected" : "");
+    card.innerHTML = `
+      <img src="${e.cover_url || ""}" alt="" onerror="this.style.opacity=.2" />
+      <div class="meta">
+        <div class="title">${e.display_title}</div>
+        <div class="sub">${e.list_status.replaceAll("_"," ")} · ${e.progress}</div>
+      </div>`;
+    card.onclick = () => show(e);
+    grid.appendChild(card);
+  });
+  return entries;
+}
+
+async function show(e) {
+  selected = e;
+  currentView = "library";
+  localStorage.setItem(VIEW_KEY, currentView);
+  $("#view-discover").style.display = "none";
+  $("#view-library").style.display = "grid";
+  $("#d-title").textContent = e.display_title;
+  $("#d-meta").textContent = [e.status, e.year].filter(Boolean).join(" · ");
+  $("#d-syn").textContent = e.synopsis || "No synopsis.";
+  statusSel.value = e.list_status;
+  $("#d-progress").value = e.progress;
+  $("#d-score").value = e.score;
+  $("#d-notes").value = e.notes || "";
+  ["d-save","d-remove","d-pdf","d-read-url","ch-refresh"].forEach(id => $(`#${id}`).disabled = false);
+  await load();
+  await loadChapters();
+}
+
+let chOffset = 0;
+let chTotal = 0;
+let chLoading = false;
+let chHasMore = false;
+let chLang = "en";
+
+async function loadChapters({ reset = true } = {}) {
+  if (!selected) return;
+  const box = $("#ch-list");
+  const msg = $("#ch-msg");
+  if (reset) {
+    box.innerHTML = "";
+    chOffset = 0;
+    chTotal = 0;
+    chHasMore = true;
+    msg.textContent = "Loading chapters…";
+  }
+  if (chLoading || !chHasMore) return;
+  chLoading = true;
+  try {
+    chLang = $("#ch-lang").value;
+    const data = await api(
+      `/api/manga/${selected.user_manga_id}/chapters?lang=${encodeURIComponent(chLang)}&limit=100&offset=${chOffset}`
+    );
+    if (reset && data.language_counts) {
+      applyLanguageCounts(data.language_counts, data.lang);
+    }
+    chTotal = data.total || 0;
+    const pendingJobs = [];
+    data.chapters.forEach((ch) => {
+      const row = appendChapterRow(box, ch, chLang);
+      const dl = ch.download;
+      const busy = !!(dl && (dl.status === "pending" || dl.status === "running"));
+      const cb = row.querySelector("input[type=checkbox]");
+      if (busy && dl.job_id) pendingJobs.push({ id: ch.id, jobId: dl.job_id, row, cb });
+    });
+    chOffset += data.chapters.length;
+    chHasMore = chOffset < chTotal && data.chapters.length > 0;
+    if (!chOffset) msg.textContent = `No ${chLang.toUpperCase()} chapters on MangaDex for this title.`;
+    else {
+      let note = chHasMore
+        ? `${chOffset} / ${chTotal} chapter(s) · scroll for more · ☑ = offline`
+        : `${chOffset} / ${chTotal} chapter(s) · ☑ = offline`;
+      if (chTotal > 0 && chTotal < 20 && chLang === "en") {
+        note += " · EN may only have extras — try another language";
+      }
+      msg.textContent = note;
+    }
+    pendingJobs.forEach(({ id, jobId, row, cb }) => trackDownload(id, jobId, row, cb));
+  } catch (err) {
+    msg.textContent = err.message;
+  } finally {
+    chLoading = false;
+  }
+}
+
+function applyLanguageCounts(counts, currentLang) {
+  const sel = $("#ch-lang");
+  const cur = currentLang || sel.value || "en";
+  const entries = Object.entries(counts || {});
+  if (!entries.length) return;
+  sel.innerHTML = "";
+  entries.forEach(([code, n]) => {
+    const opt = document.createElement("option");
+    opt.value = code;
+    opt.textContent = `${code.toUpperCase()} (${n})`;
+    if (code === cur) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  // Keep current even if missing from counts
+  if (![...sel.options].some(o => o.value === cur)) {
+    const opt = document.createElement("option");
+    opt.value = cur;
+    opt.textContent = cur.toUpperCase();
+    opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+function appendChapterRow(box, ch, lang) {
+  const msg = $("#ch-msg");
+  const row = document.createElement("div");
+  row.className = "chapter-row" + (ch.offline ? " offline" : "");
+  row.dataset.chapterId = ch.id;
+
+  const label = `Ch. ${ch.chapter}` + (ch.title ? ` — ${ch.title}` : "");
+  const resume = (ch.resume_page != null) ? ` · p.${Number(ch.resume_page) + 1}` : "";
+  const pages = (ch.pages ? `${ch.pages}p` : "") + resume;
+  const dl = ch.download;
+  const busy = !!(dl && (dl.status === "pending" || dl.status === "running"));
+  let progressHtml = "";
+  if (busy) {
+    const pct = dl.total ? Math.round((dl.progress / dl.total) * 100) : 0;
+    progressHtml = `
+      <div class="ch-progress">
+        <div class="ch-progress-bar"><i style="width:${pct}%"></i></div>
+        <span class="ch-progress-txt">${dl.progress || 0}/${dl.total || "?"} · ${pct}%</span>
+      </div>`;
+  } else if (ch.offline) {
+    progressHtml = `<div class="ch-progress"><span class="ch-progress-txt offline-tag">Saved offline</span></div>`;
+  } else if (ch.resume_page != null) {
+    progressHtml = `<div class="ch-progress"><span class="ch-progress-txt">Resume p.${Number(ch.resume_page) + 1}</span></div>`;
+  }
+
+  row.innerHTML = `
+    <label class="ch-check" title="Download for offline">
+      <input type="checkbox" ${ch.offline || busy ? "checked" : ""} />
+    </label>
+    <a class="ch-main" href="/manga/read/${ch.id}?m=${selected.user_manga_id}&lang=${encodeURIComponent(lang)}">
+      <span class="ch-label">${label}</span>
+      <span class="muted ch-pages">${pages}</span>
+    </a>
+    ${progressHtml}`;
+
+  const cb = row.querySelector("input[type=checkbox]");
+  cb.addEventListener("click", (ev) => ev.stopPropagation());
+  cb.addEventListener("change", async () => {
+    if (cb.checked) {
+      cb.disabled = true;
+      try {
+        const res = await api(`/api/manga/${selected.user_manga_id}/chapters/${ch.id}/offline`, {
+          method: "POST",
+          body: JSON.stringify({ chapter_no: String(ch.chapter || ""), title: ch.title || "" }),
+        });
+        if (res.job_id) {
+          cb.disabled = false;
+          trackDownload(ch.id, res.job_id, row, cb);
+        } else {
+          row.classList.add("offline");
+          ensureOfflineTag(row);
+          cb.disabled = false;
+        }
+      } catch (err) {
+        cb.checked = false;
+        cb.disabled = false;
+        msg.textContent = err.message;
+      }
+    } else {
+      cb.disabled = true;
+      try {
+        await api(`/api/manga/${selected.user_manga_id}/chapters/${ch.id}/offline`, { method: "DELETE" });
+        row.classList.remove("offline");
+        row.querySelector(".ch-progress")?.remove();
+        cb.disabled = false;
+      } catch (err) {
+        cb.checked = true;
+        cb.disabled = false;
+        msg.textContent = err.message;
+      }
+    }
+  });
+
+  box.appendChild(row);
+  return row;
+}
+
+function ensureOfflineTag(row) {
+  let prog = row.querySelector(".ch-progress");
+  if (!prog) {
+    prog = document.createElement("div");
+    prog.className = "ch-progress";
+    row.appendChild(prog);
+  }
+  prog.innerHTML = `<span class="ch-progress-txt offline-tag">Saved offline</span>`;
+}
+
+function trackDownload(chapterId, jobId, row, cb) {
+  let prog = row.querySelector(".ch-progress");
+  if (!prog) {
+    prog = document.createElement("div");
+    prog.className = "ch-progress";
+    row.appendChild(prog);
+  }
+  cb.checked = true;
+  let cancelled = false;
+  const onUncheck = () => {
+    if (!cb.checked) cancelled = true;
+  };
+  cb.addEventListener("change", onUncheck, { once: true });
+  pollJob(jobId, {
+    onProgress: (j) => {
+      if (cancelled || !cb.checked) return;
+      const pct = j.total ? Math.round((j.progress / j.total) * 100) : 0;
+      prog.innerHTML = `
+        <div class="ch-progress-bar"><i style="width:${pct}%"></i></div>
+        <span class="ch-progress-txt">${j.progress || 0}/${j.total || "?"} · ${pct}%</span>`;
+    },
+  }).then(() => {
+    if (!cb.checked) return;
+    row.classList.add("offline");
+    ensureOfflineTag(row);
+    cb.checked = true;
+  }).catch((err) => {
+    if (!cb.checked) {
+      row.querySelector(".ch-progress")?.remove();
+      return;
+    }
+    cb.checked = false;
+    prog.remove();
+    const msg = $("#ch-msg");
+    if (msg && !String(err.message || "").toLowerCase().includes("cancel")) {
+      msg.textContent = err.message;
+    }
+  });
+}
+
+$("#ch-list").addEventListener("scroll", () => {
+  const box = $("#ch-list");
+  if (box.scrollTop + box.clientHeight >= box.scrollHeight - 80) {
+    loadChapters({ reset: false });
+  }
+});
+
+
+$("#d-save").onclick = async () => {
+  if (!selected) return;
+  try {
+    selected = await api(`/api/manga/${selected.user_manga_id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        list_status: statusSel.value,
+        progress: +$("#d-progress").value || 0,
+        score: +$("#d-score").value || 0,
+        notes: $("#d-notes").value,
+      }),
+    });
+    $("#d-status-msg").textContent = "Saved";
+    load();
+  } catch (e) { $("#d-status-msg").textContent = e.message; }
+};
+$("#d-remove").onclick = async () => {
+  if (!selected || !confirm("Remove from list?")) return;
+  await api(`/api/manga/${selected.user_manga_id}`, { method: "DELETE" });
+  selected = null;
+  $("#ch-list").innerHTML = "";
+  $("#ch-msg").textContent = "Select a title to load chapters.";
+  load();
+};
+$("#ch-refresh").onclick = loadChapters;
+$("#ch-lang").onchange = loadChapters;
+
+$("#d-read-url").onclick = () => {
+  const url = $("#ch-url").value.trim();
+  if (!url) return;
+  const m = url.match(/chapter\/([0-9a-f-]{36})/i);
+  if (!m) { $("#d-status-msg").textContent = "Need a MangaDex chapter URL"; return; }
+  const q = selected ? `?m=${selected.user_manga_id}` : "";
+  location.href = `/manga/read/${m[1]}${q}`;
+};
+
+$("#d-pdf").onclick = async () => {
+  if (!selected) return;
+  const chapter_url = $("#ch-url").value.trim();
+  if (!chapter_url) return;
+  $("#d-status-msg").textContent = "Exporting PDF…";
+  try {
+    const { job_id } = await api("/api/manga/pdf", {
+      method: "POST",
+      body: JSON.stringify({ chapter_url, user_manga_id: selected.user_manga_id }),
+    });
+    const job = await pollJob(job_id, { onProgress: j => $("#d-status-msg").textContent = j.message || j.status });
+    $("#d-status-msg").textContent = `Saved ${job.result.path}`;
+  } catch (e) { $("#d-status-msg").textContent = e.message; }
+};
+
+const modal = $("#search-modal");
+$("#btn-search").onclick = () => modal.classList.add("open");
+$("#search-close").onclick = () => modal.classList.remove("open");
+$("#search-go").onclick = doSearch;
+async function doSearch() {
+  const q = $("#search-q").value.trim();
+  const box = $("#search-results");
+  const msg = $("#search-status-msg");
+  box.innerHTML = "";
+  if (!q) return;
+  msg.textContent = "Searching…";
+  try {
+    const hits = await api(`/api/manga/search?q=${encodeURIComponent(q)}`);
+    msg.textContent = `${hits.length} result(s)`;
+    hits.forEach(h => {
+      const div = document.createElement("div");
+      div.className = "search-hit";
+      div.innerHTML = `<strong>${h.title_english || h.title}</strong><div class="muted">${h.status || ""} ${h.year || ""}</div>`;
+      div.onclick = async () => {
+        const e = await api("/api/manga/add", {
+          method: "POST",
+          body: JSON.stringify({ ...h, list_status: searchStatus.value }),
+        });
+        modal.classList.remove("open");
+        await load();
+        show(e);
+      };
+      box.appendChild(div);
+    });
+  } catch (e) { msg.textContent = e.message; }
+}
+
+(async () => {
+  const openId = new URLSearchParams(location.search).get("open");
+  if (openId) {
+    currentView = "library";
+    localStorage.setItem(VIEW_KEY, currentView);
+    showView();
+    const entries = await load();
+    const e = entries.find(x => String(x.user_manga_id) === openId)
+      || await api(`/api/manga/${openId}`).catch(() => null);
+    if (e) show(e);
+  } else {
+    showView();
+  }
+})();
+</script>
+{% endblock %}
