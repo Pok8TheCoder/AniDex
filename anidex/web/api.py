@@ -1116,17 +1116,22 @@ def watch_catalog(user_anime_id: int) -> dict[str, Any]:
         if not e:
             raise HTTPException(404, "Anime not found")
         link = repo.get_pahe_link(user_anime_id)
-        media = {
-            m.pahe_episode_session: {
+        from pathlib import Path
+
+        media = {}
+        for m in repo.list_media(user_anime_id):
+            if not m.pahe_episode_session:
+                continue
+            # Only treat as downloaded if the file is actually on disk
+            if not m.path or not Path(m.path).is_file():
+                continue
+            media[m.pahe_episode_session] = {
                 "id": m.id,
                 "path": redact_path(m.path),
                 "label": m.label or redact_path(m.path),
                 "episode": m.episode,
                 "bytes": m.bytes,
             }
-            for m in repo.list_media(user_anime_id)
-            if m.pahe_episode_session
-        }
         seasons = []
         if link:
             for s in repo.list_pahe_seasons(link.id):
@@ -1527,9 +1532,20 @@ def media_file(media_id: int):
 @router.delete("/media/{media_id}")
 def delete_media(media_id: int) -> dict[str, Any]:
     with repo_ctx() as repo:
+        info = repo.get_media_row(media_id)
+        if not info:
+            raise HTTPException(404, "Media not found")
+        tkey = repo.media_tombstone_key(
+            info.get("mal_id"),
+            float(info["episode"]) if info.get("episode") is not None else None,
+            info.get("pahe_episode_session") or "",
+        )
         ok = repo.delete_media(media_id, delete_file=True)
         if not ok:
             raise HTTPException(404, "Media not found")
+        if tkey:
+            repo.add_tombstone("media", tkey)
+    _mark_sync_dirty("media_delete")
     return {"ok": True}
 
 

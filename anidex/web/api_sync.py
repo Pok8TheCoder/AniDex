@@ -239,6 +239,16 @@ async def sync_media_anime_put(
     data = await request.body()
     if not data:
         raise HTTPException(400, "Empty body")
+    # Don't accept media the user already deleted (tombstone)
+    from anidex.db.schema import open_repo
+
+    tkey = f"{mal_id}:{episode}:{x_anidex_pahe_session or ''}"
+    conn, repo = open_repo()
+    try:
+        if repo.has_tombstone("media", tkey):
+            return {"ok": True, "skipped": "tombstone", "local_media_id": None}
+    finally:
+        conn.close()
     mid = receive_anime_file(
         mal_id=mal_id,
         episode=episode,

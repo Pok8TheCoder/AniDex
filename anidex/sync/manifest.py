@@ -395,6 +395,28 @@ def apply_batches(batches: dict[str, Any]) -> dict[str, int]:
                     tomb.get("updated_at") or "",
                 ),
             )
+            # Apply media deletes from peer tombstones
+            if tomb.get("entity_type") == "media":
+                ek = tomb.get("entity_key") or ""
+                # entity_key = "{mal_id}:{episode}:{session}"
+                parts = ek.split(":", 2)
+                if len(parts) >= 1 and parts[0].isdigit():
+                    mal_id = int(parts[0])
+                    ep_s = parts[1] if len(parts) > 1 else ""
+                    sess = parts[2] if len(parts) > 2 else ""
+                    for e in repo.list_user_anime():
+                        if e.mal_id != mal_id:
+                            continue
+                        for m in list(repo.list_media(e.user_anime_id)):
+                            if sess and m.pahe_episode_session != sess:
+                                continue
+                            if ep_s not in ("", "None", "null"):
+                                try:
+                                    if m.episode is None or float(m.episode) != float(ep_s):
+                                        continue
+                                except (TypeError, ValueError):
+                                    continue
+                            repo.delete_media(m.id, delete_file=True)
             counts["tombstones"] += 1
 
         for remote in batches.get("anime") or []:
@@ -563,11 +585,22 @@ def diff_manifest(local: dict[str, Any], remote: dict[str, Any]) -> list[str]:
     def map_entries(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         return {i["key"]: i for i in items if i.get("key")}
 
+    local_media_tombs = {
+        t["entity_key"]
+        for t in (local.get("tombstones") or [])
+        if t.get("entity_type") == "media" and t.get("entity_key")
+    }
+
     for section in ("anime", "manga", "positions", "offline", "media", "pahe", "tombstones"):
         loc = map_entries(local.get(section) or [])
         rem = map_entries(remote.get(section) or [])
         for key, r in rem.items():
             l = loc.get(key)
+            if section == "media":
+                # media:{mal}:{ep}:{sess} → tombstone entity_key mal:ep:sess
+                ek = key[6:] if key.startswith("media:") else key
+                if ek in local_media_tombs:
+                    continue
             if not l:
                 need.append(key)
                 continue

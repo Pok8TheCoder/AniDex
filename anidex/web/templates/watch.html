@@ -80,6 +80,8 @@ let streamId = null;
 let autoNext = false;
 
 async function loadCatalog(autoLink = true) {
+  const prevSeason = $("#season") ? $("#season").value : "0";
+  const prevSession = selected?.episode_session || null;
   catalog = await api(`/api/watch/${USER_ANIME_ID}/catalog`);
   $("#crumb").textContent = `Home · Watching ${catalog.anime.display_title}`;
   seasons = catalog.seasons || [];
@@ -93,6 +95,26 @@ async function loadCatalog(autoLink = true) {
     opt.textContent = `${s.label || "Season"}${s.year ? " ("+s.year+")" : ""} · ${s.episode_count} eps`;
     box.appendChild(opt);
   });
+  if (prevSeason && +prevSeason < seasons.length) box.value = prevSeason;
+  // Refresh selected download flags from server (e.g. after Deletes tab)
+  if (prevSession) {
+    const ep = currentEps().find((e) => e.episode_session === prevSession);
+    if (ep) {
+      selected = {
+        anime_session: seasons[+$("#season").value]?.pahe_session,
+        episode_session: ep.episode_session,
+        episode: ep.episode,
+        title: ep.title,
+        media_id: ep.media_id || null,
+        downloaded: !!ep.downloaded,
+      };
+      $("#btn-del").disabled = !ep.downloaded;
+    } else if (selected) {
+      selected.downloaded = false;
+      selected.media_id = null;
+      $("#btn-del").disabled = true;
+    }
+  }
   rebuildEps();
   if (!link && autoLink) await doLink();
   else if (link && !seasons.length && autoLink) await doLink();
@@ -230,9 +252,15 @@ function rebuildEps() {
     cb.type = "checkbox";
     cb.className = "ep-dl";
     cb.title = ep.downloaded ? "Remove download" : "Download episode";
+    // Only reflect real downloads / in-flight jobs — never "streamed"
     cb.checked = !!ep.downloaded || dlBusy.has(ep.episode_session);
     cb.disabled = dlBusy.has(ep.episode_session);
-    cb.addEventListener("click", (ev) => ev.stopPropagation());
+    // Keep tile tap (play) separate from checkbox (download)
+    const stopTile = (ev) => ev.stopPropagation();
+    cb.addEventListener("click", stopTile);
+    cb.addEventListener("pointerdown", stopTile);
+    cb.addEventListener("mousedown", stopTile);
+    cb.addEventListener("touchstart", stopTile, { passive: true });
     cb.addEventListener("change", async () => {
       if (cb.checked) {
         try {
@@ -254,6 +282,10 @@ function rebuildEps() {
           $("#ep-status").textContent = `E${label} still downloading — wait to delete`;
           return;
         }
+        if (!ep.downloaded && !ep.media_id) {
+          cb.checked = false;
+          return;
+        }
         cb.disabled = true;
         try {
           await deleteEpisodeDownload(ep);
@@ -267,7 +299,12 @@ function rebuildEps() {
     });
     wrap.appendChild(cb);
 
-    wrap.onclick = () => selectEp(ep, true);
+    wrap.addEventListener("click", (ev) => {
+      if (ev.target === cb || (ev.target && ev.target.closest && ev.target.closest(".ep-dl"))) {
+        return;
+      }
+      selectEp(ep, true);
+    });
     grid.appendChild(wrap);
   });
 }
@@ -537,6 +574,14 @@ $("#btn-del").onclick = async () => {
 };
 
 window.addEventListener("beforeunload", destroyHls);
+// Keep checkboxes in sync when returning from Downloads / another tab
+let _catRefreshAt = 0;
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  if (Date.now() - _catRefreshAt < 1500) return;
+  _catRefreshAt = Date.now();
+  loadCatalog(false).catch(() => {});
+});
 loadCatalog(true);
 </script>
 {% endblock %}

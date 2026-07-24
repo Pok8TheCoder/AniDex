@@ -901,6 +901,15 @@ class Repository:
         label: str = "",
         bytes_size: int = 0,
     ) -> int:
+        # Intentional re-download clears a prior delete tombstone
+        entry = self.get_user_anime(user_anime_id)
+        if entry and entry.mal_id:
+            tkey = self.media_tombstone_key(
+                entry.mal_id, episode, pahe_episode_session
+            )
+            if tkey:
+                self.clear_tombstone("media", tkey)
+
         existing = None
         if pahe_episode_session:
             existing = self.get_media_for_episode(user_anime_id, pahe_episode_session)
@@ -950,6 +959,57 @@ class Repository:
             except OSError:
                 pass
         return True
+
+    def get_media_row(self, media_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT m.*, a.mal_id AS mal_id
+            FROM local_media m
+            LEFT JOIN user_anime ua ON ua.id = m.user_anime_id
+            LEFT JOIN anime a ON a.id = ua.anime_id
+            WHERE m.id = ?
+            """,
+            (media_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+    def add_tombstone(self, entity_type: str, entity_key: str) -> None:
+        now = _now()
+        self.conn.execute(
+            """
+            INSERT INTO sync_tombstone (entity_type, entity_key, deleted_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(entity_type, entity_key) DO UPDATE SET
+              deleted_at=excluded.deleted_at,
+              updated_at=excluded.updated_at
+            """,
+            (entity_type, entity_key, now, now),
+        )
+        self.conn.commit()
+
+    def clear_tombstone(self, entity_type: str, entity_key: str) -> None:
+        self.conn.execute(
+            "DELETE FROM sync_tombstone WHERE entity_type=? AND entity_key=?",
+            (entity_type, entity_key),
+        )
+        self.conn.commit()
+
+    def has_tombstone(self, entity_type: str, entity_key: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM sync_tombstone WHERE entity_type=? AND entity_key=?",
+            (entity_type, entity_key),
+        ).fetchone()
+        return row is not None
+
+    @staticmethod
+    def media_tombstone_key(
+        mal_id: int | None, episode: float | None, pahe_episode_session: str
+    ) -> str | None:
+        if not mal_id:
+            return None
+        return f"{int(mal_id)}:{episode}:{pahe_episode_session or ''}"
 
     @staticmethod
     def _local_media(r: sqlite3.Row) -> LocalMediaEntry:

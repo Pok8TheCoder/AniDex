@@ -144,11 +144,25 @@ def run_sync(peer_url: str | None = None) -> dict[str, Any]:
                 result["pulled"] = pulled_counts
 
                 # Media files from peer
+                from anidex.db.schema import open_repo as _open_repo
+
                 for meta in batches.get("media_meta") or []:
                     key = meta.get("key") or ""
                     local_id = find_media_id_for_key(key)
                     if local_id and resolve_anime_media_path(local_id):
                         continue
+                    # Respect local delete tombstones (don't resurrect deleted eps)
+                    try:
+                        mal_id = int(meta["mal_id"])
+                        tkey = f"{mal_id}:{meta.get('episode')}:{meta.get('pahe_episode_session') or ''}"
+                        _c, _r = _open_repo()
+                        try:
+                            if _r.has_tombstone("media", tkey):
+                                continue
+                        finally:
+                            _c.close()
+                    except Exception:
+                        pass
                     # key may already include "media:" prefix
                     path_key = key if key.startswith("media:") else f"media:{key}"
                     url = urljoin(

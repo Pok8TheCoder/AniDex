@@ -247,15 +247,18 @@ label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px
 .ep-tile.dl-busy { opacity: 0.75; }
 .ep-tile .ep-dl {
   position: absolute;
-  top: 3px;
-  right: 3px;
-  width: 16px;
-  height: 16px;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
   margin: 0;
   padding: 0;
   accent-color: var(--accent);
   cursor: pointer;
   z-index: 2;
+  /* Don't let the checkbox expand and steal tile taps */
+  flex: none;
+  pointer-events: auto;
 }
 .ep-tile .ep-dl:disabled {
   cursor: wait;
