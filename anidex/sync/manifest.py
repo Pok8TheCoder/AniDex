@@ -10,6 +10,7 @@ from anidex.db.repositories import Repository
 from anidex.db.schema import open_repo
 from anidex.sync import APP_NAME, PROTOCOL_VERSION
 from anidex.sync import merge as merge_mod
+from anidex.sync.pahe_catalog_sync import apply_pahe_catalog, export_pahe_for_entry
 from anidex.sync.token import ensure_sync_identity
 
 
@@ -161,6 +162,27 @@ def build_manifest(repo: Repository | None = None) -> dict[str, Any]:
                 }
             )
 
+        pahe = []
+        for e in repo.list_user_anime():
+            if not e.mal_id:
+                continue
+            payload = export_pahe_for_entry(
+                repo, mal_id=e.mal_id, user_anime_id=e.user_anime_id
+            )
+            if payload:
+                pahe.append(
+                    {
+                        "key": payload["key"],
+                        "mal_id": payload["mal_id"],
+                        "updated_at": payload.get("updated_at") or "",
+                        "season_count": len(payload.get("seasons") or []),
+                        "episode_count": sum(
+                            len(s.get("episodes") or [])
+                            for s in (payload.get("seasons") or [])
+                        ),
+                    }
+                )
+
         return {
             "app": APP_NAME,
             "protocol": PROTOCOL_VERSION,
@@ -170,6 +192,7 @@ def build_manifest(repo: Repository | None = None) -> dict[str, Any]:
             "media": media,
             "offline": offline,
             "positions": positions,
+            "pahe": pahe,
             "tombstones": tombs,
         }
     finally:
@@ -189,6 +212,7 @@ def export_entities(keys: list[str]) -> dict[str, Any]:
             "positions": [],
             "offline_meta": [],
             "media_meta": [],
+            "pahe": [],
             "tombstones": [],
         }
         for key in keys:
@@ -278,6 +302,16 @@ def export_entities(keys: list[str]) -> dict[str, Any]:
                             }
                         )
                         break
+            elif key.startswith("pahe:"):
+                mal_id = int(key.split(":", 1)[1])
+                e = anime_by_mal.get(mal_id)
+                if not e:
+                    continue
+                payload = export_pahe_for_entry(
+                    repo, mal_id=mal_id, user_anime_id=e.user_anime_id
+                )
+                if payload:
+                    batches["pahe"].append(payload)
             elif key.startswith("tomb:"):
                 _, etype, ekey = key.split(":", 2)
                 row = repo.conn.execute(
@@ -341,6 +375,7 @@ def apply_batches(batches: dict[str, Any]) -> dict[str, int]:
         "positions": 0,
         "offline_meta": 0,
         "media_meta": 0,
+        "pahe": 0,
         "tombstones": 0,
     }
     try:
@@ -510,6 +545,11 @@ def apply_batches(batches: dict[str, Any]) -> dict[str, int]:
         # offline_meta / media_meta recorded for client media fetch; counts only
         counts["offline_meta"] = len(batches.get("offline_meta") or [])
         counts["media_meta"] = len(batches.get("media_meta") or [])
+
+        for remote in batches.get("pahe") or []:
+            if apply_pahe_catalog(repo, remote):
+                counts["pahe"] += 1
+
         repo.conn.commit()
         return counts
     finally:
@@ -523,7 +563,7 @@ def diff_manifest(local: dict[str, Any], remote: dict[str, Any]) -> list[str]:
     def map_entries(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         return {i["key"]: i for i in items if i.get("key")}
 
-    for section in ("anime", "manga", "positions", "offline", "media", "tombstones"):
+    for section in ("anime", "manga", "positions", "offline", "media", "pahe", "tombstones"):
         loc = map_entries(local.get(section) or [])
         rem = map_entries(remote.get(section) or [])
         for key, r in rem.items():
@@ -536,7 +576,7 @@ def diff_manifest(local: dict[str, Any], remote: dict[str, Any]) -> list[str]:
                     need.append(key)
                 elif int(r.get("bytes") or 0) > int(l.get("bytes") or 0):
                     need.append(key)
-            elif section in ("anime", "manga", "positions", "offline", "tombstones"):
+            elif section in ("anime", "manga", "positions", "offline", "pahe", "tombstones"):
                 if (r.get("updated_at") or "") > (l.get("updated_at") or ""):
                     need.append(key)
                 elif section in ("anime", "manga") and int(r.get("progress") or 0) > int(
@@ -545,6 +585,10 @@ def diff_manifest(local: dict[str, Any], remote: dict[str, Any]) -> list[str]:
                     need.append(key)
                 elif section == "positions" and int(r.get("page_index") or 0) > int(
                     l.get("page_index") or 0
+                ):
+                    need.append(key)
+                elif section == "pahe" and int(r.get("episode_count") or 0) > int(
+                    l.get("episode_count") or 0
                 ):
                     need.append(key)
     return need

@@ -12,9 +12,9 @@ def playwright_available() -> bool:
 
 
 def local_capabilities() -> list[str]:
-    caps = ["library", "anime_media", "manga_offline", "positions", "live_ws"]
+    caps = ["library", "anime_media", "manga_offline", "positions", "live_ws", "pahe_catalog"]
     if playwright_available():
-        caps.extend(["playwright", "remote_download"])
+        caps.extend(["playwright", "remote_download", "remote_pahe"])
     return caps
 
 

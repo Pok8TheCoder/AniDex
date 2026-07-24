@@ -1140,21 +1140,53 @@ def watch_catalog(user_anime_id: int) -> dict[str, Any]:
 
 @router.post("/watch/{user_anime_id}/link")
 def watch_link(user_anime_id: int, body: LinkBody) -> dict[str, Any]:
+    from anidex.sync.capabilities import playwright_available
+
     with repo_ctx() as repo:
         e = repo.get_user_anime(user_anime_id)
         if not e:
             raise HTTPException(404, "Anime not found")
         query = (body.query or e.title_english or e.title).strip()
+        mal_id = e.mal_id
 
     def work(job) -> dict[str, Any]:
+        job.message = "Working…"
+        if not playwright_available():
+            from anidex.sync.pahe_catalog_sync import apply_pahe_catalog
+            from anidex.sync.peer_http import peer_post
+            from anidex.web.deps import repo_ctx as rc
+
+            job.message = "Asking PC for AnimePahe catalog…"
+            payload = peer_post(
+                "api/sync/remote-pahe-link",
+                {
+                    "mal_id": mal_id,
+                    "title": query,
+                    "query": query,
+                    "chosen_session": body.chosen_session,
+                    "refresh_only": body.refresh_only,
+                },
+                timeout=600.0,
+            )
+            catalog = payload.get("catalog")
+            if not catalog:
+                raise RuntimeError("Peer returned no Pahe catalog")
+            with rc() as repo:
+                apply_pahe_catalog(repo, catalog)
+            _mark_sync_dirty("pahe_link_remote")
+            job.message = "Catalog synced from PC"
+            return payload.get("result") or {"ok": True, "remote": True}
+
         from anidex.services.pahe_catalog import link_anime_to_pahe, refresh_pahe_episodes
 
-        job.message = "Working…"
         if body.refresh_only:
-            return refresh_pahe_episodes(user_anime_id)
-        return link_anime_to_pahe(
-            user_anime_id, query, chosen_session=body.chosen_session
-        )
+            out = refresh_pahe_episodes(user_anime_id)
+        else:
+            out = link_anime_to_pahe(
+                user_anime_id, query, chosen_session=body.chosen_session
+            )
+        _mark_sync_dirty("pahe_link")
+        return out
 
     job = JOBS.submit("pahe_link", work)
     return {"job_id": job.id}
@@ -1162,10 +1194,20 @@ def watch_link(user_anime_id: int, body: LinkBody) -> dict[str, Any]:
 
 @router.get("/watch/pahe-search")
 def pahe_search(q: str) -> dict[str, Any]:
+    from anidex.sync.capabilities import playwright_available
+
     def work(job) -> list[dict[str, Any]]:
+        job.message = "Searching AnimePahe…"
+        if not playwright_available():
+            from anidex.sync.peer_http import peer_get
+            from urllib.parse import quote
+
+            job.message = "Searching via PC…"
+            hits = peer_get(f"api/sync/remote-pahe-search?q={quote(q.strip())}")
+            return hits if isinstance(hits, list) else []
+
         from anidex.services.pahe_catalog import search_anime
 
-        job.message = "Searching AnimePahe…"
         hits = search_anime(q.strip())
         return [
             {
@@ -1186,7 +1228,14 @@ def pahe_search(q: str) -> dict[str, Any]:
 
 @router.post("/watch/resolve")
 def watch_resolve(body: ResolveBody) -> dict[str, Any]:
+    from anidex.sync.capabilities import playwright_available
+
     def work(job) -> dict[str, Any]:
+        if not playwright_available():
+            raise RuntimeError(
+                "Streaming AnimePahe needs the PC. On this phone, Download the episode "
+                "(PC fetches it), then play the local file — or open Watch on the PC."
+            )
         from anidex.services.animepahe import resolve_play_url
         from anidex.services.pahe_catalog import play_url
         from anidex.services.stream_sessions import STREAM_STORE

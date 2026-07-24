@@ -80,6 +80,14 @@ class RemoteDownloadBody(BaseModel):
     user_anime_id: int | None = None
 
 
+class RemotePaheLinkBody(BaseModel):
+    mal_id: int | None = None
+    title: str = ""
+    query: str = ""
+    chosen_session: str | None = None
+    refresh_only: bool = False
+
+
 @router.get("/hello")
 def sync_hello(
     request: Request,
@@ -380,6 +388,87 @@ def sync_remote_download_status(
     if not job:
         raise HTTPException(404, "Job not found")
     return job.to_dict()
+
+
+@router.post("/remote-pahe-link")
+def sync_remote_pahe_link(
+    body: RemotePaheLinkBody,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_anidex_sync_token: str | None = Header(default=None, alias="X-AniDex-Sync-Token"),
+) -> dict[str, Any]:
+    """PC-only: search/link/refresh AnimePahe and return catalog for the phone."""
+    require_sync_token(request, authorization, x_anidex_sync_token)
+    if not playwright_available():
+        raise HTTPException(503, "This peer cannot talk to AnimePahe (Playwright missing).")
+
+    from anidex.services.pahe_catalog import link_anime_to_pahe, refresh_pahe_episodes
+    from anidex.sync.pahe_catalog_sync import export_pahe_for_entry
+    from anidex.web.deps import repo_ctx
+
+    query = (body.query or body.title or "").strip()
+    user_anime_id = None
+    with repo_ctx() as repo:
+        entry = None
+        if body.mal_id:
+            for e in repo.list_user_anime():
+                if e.mal_id == body.mal_id:
+                    entry = e
+                    break
+        if entry is None and body.mal_id:
+            anime_id = repo.upsert_anime(
+                mal_id=body.mal_id,
+                title=body.title or query or f"MAL {body.mal_id}",
+            )
+            user_anime_id = repo.set_user_anime(anime_id, list_status="watching")
+            entry = repo.get_user_anime(user_anime_id)
+        if not entry:
+            raise HTTPException(404, "Anime not found on PC for Pahe link")
+        user_anime_id = entry.user_anime_id
+        if not query:
+            query = entry.title_english or entry.title
+        mal_id = entry.mal_id
+
+    if body.refresh_only:
+        result = refresh_pahe_episodes(user_anime_id)
+    else:
+        result = link_anime_to_pahe(
+            user_anime_id, query, chosen_session=body.chosen_session
+        )
+
+    with repo_ctx() as repo:
+        catalog = export_pahe_for_entry(
+            repo, mal_id=int(mal_id), user_anime_id=user_anime_id
+        )
+    live_sync.mark_dirty(reason="remote_pahe_link")
+    return {"ok": True, "result": result, "catalog": catalog}
+
+
+@router.get("/remote-pahe-search")
+def sync_remote_pahe_search(
+    request: Request,
+    q: str = "",
+    authorization: str | None = Header(default=None),
+    x_anidex_sync_token: str | None = Header(default=None, alias="X-AniDex-Sync-Token"),
+) -> list[dict[str, Any]]:
+    require_sync_token(request, authorization, x_anidex_sync_token)
+    if not playwright_available():
+        raise HTTPException(503, "This peer cannot talk to AnimePahe (Playwright missing).")
+    from anidex.services.pahe_catalog import search_anime
+
+    hits = search_anime((q or "").strip())
+    return [
+        {
+            "session": h.session,
+            "title": h.title,
+            "type": h.type,
+            "year": h.year,
+            "episodes": h.episodes,
+            "poster": h.poster,
+            "status": h.status,
+        }
+        for h in hits
+    ]
 
 
 @router.get("/status")

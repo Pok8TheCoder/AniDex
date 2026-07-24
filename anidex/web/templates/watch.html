@@ -139,7 +139,7 @@ function selectEp(ep, play) {
 }
 
 async function doLink(chosen_session = null, refresh_only = false) {
-  $("#link-lbl").textContent = refresh_only ? "Refreshing…" : "Searching AnimePahe…";
+  $("#link-lbl").textContent = refresh_only ? "Refreshing…" : "Fetching episode list…";
   $("#player-status").textContent = "Linking…";
   try {
     const { job_id } = await api(`/api/watch/${USER_ANIME_ID}/link`, {
@@ -150,7 +150,8 @@ async function doLink(chosen_session = null, refresh_only = false) {
     await loadCatalog(false);
     $("#player-status").textContent = "Linked";
   } catch (e) {
-    $("#link-lbl").textContent = e.message;
+    const tip = " Keep PC AniDex on --lan, same sync token, then Sync now / Refresh.";
+    $("#link-lbl").textContent = e.message + tip;
     $("#player-status").textContent = e.message;
   }
 }
