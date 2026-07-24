@@ -167,7 +167,7 @@ class HlsStreamSession:
             tmp.replace(path)
             return data
 
-    def warm_start(self, seconds: float = 15.0) -> None:
+    def warm_start(self, seconds: float = 2.0) -> None:
         """Block until the first ~seconds of media are cached (parallel)."""
         if not self.segments:
             return
@@ -208,7 +208,7 @@ class StreamSessionStore:
         m3u8_url: str,
         *,
         referer: str,
-        warm_seconds: float = 12.0,
+        warm_seconds: float = 2.0,
     ) -> HlsStreamSession:
         sid = secrets.token_urlsafe(12)
         http = _curl_session(referer)

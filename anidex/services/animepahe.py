@@ -7,7 +7,12 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from anidex.services.pahe_browser import PAHE_HOME, browser_fetch, browser_resolve_kwik_m3u8
+from anidex.services.pahe_browser import (
+    PAHE_HOME,
+    browser_fetch,
+    browser_resolve_kwik_m3u8,
+    browser_resolve_play,
+)
 
 PLAY_URL_RE = re.compile(
     r"animepahe\.(?:pw|com|org)/play/"
@@ -369,17 +374,14 @@ def resolve_play_url(
     *,
     resolution: int = 1080,
     audio: str = "jpn",
+    on_log=None,
 ) -> ResolvedStream:
-    html = fetch_play_html(play_url.strip())
-    meta = parse_play_meta(html, play_url=play_url.strip())
-    sources = parse_sources(html)
-    src = pick_source(sources, resolution=resolution, audio=audio)
-    m3u8 = resolve_kwik(src.url, referer=play_url.strip())
-    return ResolvedStream(
-        m3u8=m3u8,
-        source=src,
-        referer=src.url.rsplit("/", 1)[0] + "/",
-        meta=meta,
+    # One Playwright job (same path/speed as download) — not two separate page loads.
+    return browser_resolve_play(
+        play_url.strip(),
+        resolution=resolution,
+        audio=audio,
+        on_log=on_log,
     )
 
 

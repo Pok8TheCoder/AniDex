@@ -215,32 +215,106 @@ def _load_url(url: str, *, referer: str | None = None, kwik: bool = False) -> st
 
 
 def _open_kwik_and_capture_m3u8(pg, kwik_url: str, *, referer: str) -> str:
-    captured: list[str] = []
+    """Same fast path as download: short wait → unpack HTML → brief network poll."""
+    from anidex.services.kwik import extract_m3u8
 
-    def on_response(resp) -> None:
-        if ".m3u8" in resp.url and resp.ok and resp.url not in captured:
-            captured.append(resp.url)
+    m3u8_urls: list[str] = []
+
+    def on_request(req) -> None:
+        if ".m3u8" in req.url.lower() and req.url not in m3u8_urls:
+            m3u8_urls.append(req.url)
 
     headers: dict[str, str] = {}
     if referer:
         headers["Referer"] = referer
     pg.set_extra_http_headers(headers)
-    pg.on("response", on_response)
+    pg.on("request", on_request)
     try:
         pg.goto(kwik_url, wait_until="domcontentloaded", timeout=120_000)
-        for _ in range(60):
-            if captured:
-                return captured[0]
-            pg.wait_for_timeout(500)
-        from anidex.services.kwik import extract_m3u8
-
-        html = pg.content()
-        m3u8 = extract_m3u8(html)
-        if m3u8:
-            return m3u8
-        raise RuntimeError("Could not extract m3u8 from Kwik page.")
+        pg.wait_for_timeout(2000)
+        m3u8 = extract_m3u8(pg.content())
+        if not m3u8:
+            for _ in range(30):
+                if m3u8_urls:
+                    m3u8 = m3u8_urls[0]
+                    break
+                pg.wait_for_timeout(400)
+        if not m3u8 and m3u8_urls:
+            m3u8 = m3u8_urls[0]
+        if not m3u8:
+            raise RuntimeError(
+                "Could not find stream URL on Kwik page. "
+                "Make sure Chrome shows the video page (not an ad)."
+            )
+        return m3u8
     finally:
-        pg.remove_listener("response", on_response)
+        pg.remove_listener("request", on_request)
+
+
+def _resolve_play_to_m3u8(
+    url: str,
+    *,
+    resolution: int = 1080,
+    audio: str = "jpn",
+    on_log: Callable[[str], None] | None = None,
+) -> tuple[str, str, Any, Any]:
+    """One browser pass: Pahe play page → Kwik → m3u8 (same path as download).
+
+    Returns ``(m3u8_url, kwik_url, meta, source)``.
+    """
+    from anidex.services.animepahe import (
+        enrich_meta_from_release_api,
+        is_kwik_url,
+        parse_play_meta,
+        parse_sources,
+        pick_source,
+    )
+
+    def log(msg: str) -> None:
+        if on_log:
+            on_log(msg)
+
+    pg = _page()
+    _ensure_pahe_session(pg)
+
+    source = None
+    meta = None
+    text = url.strip()
+    if is_kwik_url(text):
+        kwik_url = text
+        play_referer = PAHE_HOME
+    else:
+        log("Loading play page…")
+        html = _load_url(text, referer=PAHE_HOME, kwik=False)
+        meta = parse_play_meta(html, play_url=text)
+        if meta.anime_session:
+            try:
+                api = pg.evaluate(
+                    """async (session) => {
+                      const r = await fetch(
+                        `/api?m=release&id=${session}&sort=episode_asc&page=1`
+                      );
+                      if (!r.ok) return null;
+                      return await r.json();
+                    }""",
+                    meta.anime_session,
+                )
+                if api:
+                    meta = enrich_meta_from_release_api(meta, api)
+            except Exception:
+                pass
+        if meta and meta.anime_title:
+            log(f"Detected: {meta.display}")
+        sources = parse_sources(html)
+        source = pick_source(sources, resolution=resolution, audio=audio)
+        kwik_url = source.url
+        play_referer = text
+        log(f"Selected {source.label}")
+
+    log("Opening Kwik player…")
+    m3u8 = _open_kwik_and_capture_m3u8(pg, kwik_url, referer=play_referer)
+    log("Stream URL found")
+    return m3u8, kwik_url, meta, source
 
 
 def close_browser() -> None:
@@ -326,6 +400,26 @@ def browser_resolve_kwik_m3u8(kwik_url: str, *, referer: str = PAHE_HOME) -> str
     return _worker_instance().submit(_resolve, timeout=180)
 
 
+def browser_resolve_play(
+    url: str,
+    *,
+    resolution: int = 1080,
+    audio: str = "jpn",
+    on_log: Callable[[str], None] | None = None,
+):
+    """Resolve AnimePahe/Kwik to m3u8 in one browser job (matches download speed)."""
+    from anidex.services.animepahe import ResolvedStream
+
+    def _resolve():
+        m3u8, kwik_url, meta, source = _resolve_play_to_m3u8(
+            url, resolution=resolution, audio=audio, on_log=on_log
+        )
+        referer = (kwik_url.rsplit("/", 1)[0] + "/") if kwik_url else PAHE_HOME
+        return ResolvedStream(m3u8=m3u8, source=source, referer=referer, meta=meta)
+
+    return _worker_instance().submit(_resolve, timeout=180)
+
+
 def browser_download_episode(
     url: str,
     output: Path | None,
@@ -343,16 +437,6 @@ def browser_download_episode(
     """
 
     def _resolve() -> tuple[str, str, Path, Any, Any]:
-        from anidex.services.animepahe import (
-            PahePlayMeta,
-            PaheSource,
-            enrich_meta_from_release_api,
-            is_kwik_url,
-            parse_play_meta,
-            parse_sources,
-            pick_source,
-        )
-        from anidex.services.kwik import extract_m3u8
         from anidex.paths import output_dir
         import re as _re
 
@@ -363,44 +447,11 @@ def browser_download_episode(
         def safe_name(name: str) -> str:
             return _re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(" .") or "episode"
 
-        pg = _page()
-        _ensure_pahe_session(pg)
-
-        source: PaheSource | None = None
-        meta: PahePlayMeta | None = None
-        text = url.strip()
-        if is_kwik_url(text):
-            kwik_url = text
-            play_referer = PAHE_HOME
-        else:
-            log("Loading play page...")
-            html = _load_url(text, referer=PAHE_HOME, kwik=False)
-            meta = parse_play_meta(html, play_url=text)
-            if meta.anime_session:
-                try:
-                    api = pg.evaluate(
-                        """async (session) => {
-                          const r = await fetch(
-                            `/api?m=release&id=${session}&sort=episode_asc&page=1`
-                          );
-                          if (!r.ok) return null;
-                          return await r.json();
-                        }""",
-                        meta.anime_session,
-                    )
-                    if api:
-                        meta = enrich_meta_from_release_api(meta, api)
-                except Exception:
-                    pass
-            if on_meta and meta:
-                on_meta(meta)
-            if meta and meta.anime_title:
-                log(f"Detected: {meta.display}")
-            sources = parse_sources(html)
-            source = pick_source(sources, resolution=resolution, audio=audio)
-            kwik_url = source.url
-            play_referer = text
-            log(f"Selected {source.label}")
+        m3u8, kwik_url, meta, source = _resolve_play_to_m3u8(
+            url, resolution=resolution, audio=audio, on_log=on_log
+        )
+        if on_meta and meta:
+            on_meta(meta)
 
         root = out_dir or (output_dir() / "anime")
         if meta and meta.anime_title and output is None:
@@ -420,40 +471,8 @@ def browser_download_episode(
                 dest = Path(output)
                 dest.parent.mkdir(parents=True, exist_ok=True)
 
-        log("Opening Kwik player...")
-        headers: dict[str, str] = {}
-        if play_referer:
-            headers["Referer"] = play_referer
-        pg.set_extra_http_headers(headers)
-
-        m3u8_urls: list[str] = []
-
-        def on_request(req) -> None:
-            if ".m3u8" in req.url.lower() and req.url not in m3u8_urls:
-                m3u8_urls.append(req.url)
-
-        pg.on("request", on_request)
-        try:
-            pg.goto(kwik_url, wait_until="domcontentloaded", timeout=120_000)
-            pg.wait_for_timeout(2000)
-            m3u8 = extract_m3u8(pg.content())
-            if not m3u8:
-                for _ in range(30):
-                    if m3u8_urls:
-                        m3u8 = m3u8_urls[0]
-                        break
-                    pg.wait_for_timeout(400)
-            if not m3u8 and m3u8_urls:
-                m3u8 = m3u8_urls[0]
-            if not m3u8:
-                raise RuntimeError(
-                    "Could not find stream URL on Kwik page. "
-                    "Make sure Chrome shows the video page (not an ad)."
-                )
-            log("Stream URL found — downloading…")
-            return m3u8, kwik_url, dest, meta, source
-        finally:
-            pg.remove_listener("request", on_request)
+        log("Stream URL found — downloading…")
+        return m3u8, kwik_url, dest, meta, source
 
     m3u8_url, kwik_url, dest, meta, source = _worker_instance().submit(
         _resolve, timeout=300

@@ -1273,11 +1273,21 @@ def watch_resolve(body: ResolveBody) -> dict[str, Any]:
 
         job.message = "Resolving stream…"
         url = play_url(body.anime_session, body.episode_session)
+
+        def on_log(msg: str) -> None:
+            job.message = msg
+
         resolved = resolve_play_url(
-            url, resolution=body.resolution, audio=body.audio
+            url,
+            resolution=body.resolution,
+            audio=body.audio,
+            on_log=on_log,
         )
-        job.message = "Caching first seconds…"
-        session = STREAM_STORE.create(resolved.m3u8, referer=resolved.referer)
+        # Don't block on warm cache — prefetch runs in background; player starts ~2s buffer.
+        job.message = "Starting player…"
+        session = STREAM_STORE.create(
+            resolved.m3u8, referer=resolved.referer, warm_seconds=0.0
+        )
         src = resolved.source
         return {
             "stream_id": session.id,

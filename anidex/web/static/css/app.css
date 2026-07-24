@@ -251,14 +251,22 @@ label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px
 }
 
 .player-chrome {
-  background: #0c0b09;
+  background: #000;
   border: 1px solid var(--border);
   border-radius: 10px;
   overflow: hidden;
+  position: relative;
+  width: 100%;
+  max-width: min(100%, calc(62vh * 16 / 9));
+  margin-inline: auto;
+  aspect-ratio: 16 / 9;
 }
 .player-chrome video {
+  position: absolute;
+  inset: 0;
   width: 100%;
-  max-height: 62vh;
+  height: 100%;
+  object-fit: contain;
   background: #000;
   display: block;
 }

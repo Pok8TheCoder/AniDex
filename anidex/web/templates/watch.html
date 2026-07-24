@@ -316,12 +316,58 @@ function destroyHls() {
   video.load();
 }
 
+/** Seconds of media buffered ahead of currentTime. */
+function bufferedAhead() {
+  try {
+    const t = video.currentTime || 0;
+    for (let i = 0; i < video.buffered.length; i++) {
+      if (video.buffered.start(i) <= t + 0.35 && video.buffered.end(i) > t) {
+        return video.buffered.end(i) - t;
+      }
+    }
+  } catch (_) {}
+  return 0;
+}
+
+/**
+ * Start playback once ~2s is buffered (don't wait for the whole episode).
+ * Falls back to play with whatever we have after a short timeout.
+ */
+function attachEarlyPlay(minSec = 2, fallbackMs = 3500) {
+  let started = false;
+  const tryPlay = () => {
+    if (started) return;
+    if (bufferedAhead() >= minSec) {
+      started = true;
+      detach();
+      video.play().catch(() => {});
+    }
+  };
+  const onProg = () => tryPlay();
+  const timer = setTimeout(() => {
+    if (started) return;
+    if (bufferedAhead() > 0 || video.readyState >= 2) {
+      started = true;
+      detach();
+      video.play().catch(() => {});
+    }
+  }, fallbackMs);
+  function detach() {
+    video.removeEventListener("progress", onProg);
+    video.removeEventListener("canplay", onProg);
+    clearTimeout(timer);
+  }
+  video.addEventListener("progress", onProg);
+  video.addEventListener("canplay", onProg);
+  return { tryPlay, cancel: () => { started = true; detach(); } };
+}
+
 async function playSelected() {
   if (!selected) return;
   destroyHls();
   if (selected.downloaded && selected.media_id) {
     video.src = `/api/media/${selected.media_id}/file`;
-    video.play();
+    video.play().catch(() => {});
     $("#player-status").textContent = "Playing local file";
     return;
   }
@@ -342,16 +388,28 @@ async function playSelected() {
     streamId = r.stream_id;
     const url = r.playlist_url;
     if (Hls.isSupported()) {
-      hls = new Hls({ enableWorker: true });
+      hls = new Hls({
+        enableWorker: true,
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+        startFragPrefetch: true,
+      });
       hls.loadSource(url);
       hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => video.play());
+      $("#player-status").textContent = "Buffering ~2s…";
+      const early = attachEarlyPlay(2, 3500);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => early.tryPlay());
+      hls.on(Hls.Events.FRAG_BUFFERED, () => early.tryPlay());
       hls.on(Hls.Events.ERROR, (_, data) => {
-        if (data.fatal) $("#player-status").textContent = "Playback error: " + (data.type || "fatal");
+        if (data.fatal) {
+          early.cancel();
+          $("#player-status").textContent = "Playback error: " + (data.type || "fatal");
+        }
       });
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = url;
-      video.play();
+      $("#player-status").textContent = "Buffering ~2s…";
+      attachEarlyPlay(2, 3500);
     } else {
       throw new Error("HLS not supported in this browser");
     }
