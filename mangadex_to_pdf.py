@@ -10,7 +10,14 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-import img2pdf
+try:
+    import img2pdf
+except ImportError as e:  # pragma: no cover
+    raise SystemExit(
+        "img2pdf is required for PDF export. Install with:\n"
+        "  pip install -r requirements-pdf.txt\n"
+        "(Skip on Termux — use the in-app manga reader / peer sync instead.)"
+    ) from e
 import requests
 
 API = "https://api.mangadex.org"

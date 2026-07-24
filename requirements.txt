@@ -1,6 +1,6 @@
 # Core — works on PC and Termux (web UI, library, peer sync, MangaDex)
+# No img2pdf/pikepdf (needs qpdf; fails on Termux). No Playwright/av.
 requests>=2.32.0
-img2pdf>=0.5.1
 Pillow>=10.0.0
 cryptography>=42.0.0
 fastapi>=0.115.0

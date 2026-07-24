@@ -29,12 +29,12 @@ playwright install chromium
 
 ### Termux (Android)
 
-Playwright / PyAV / curl_cffi are **not** on Android — that is fine. Termux runs the web UI + peer sync; anime MP4s come from the PC.
+Skip Playwright, PyAV, curl_cffi, and **img2pdf** (pulls pikepdf/qpdf — fails to build on Android). Termux runs the web UI + peer sync; anime MP4s and offline manga come from the PC.
 
 ```bash
 pkg update
 pkg install python git
-cd ~/git/LocalFun   # or wherever you cloned
+cd ~/git/AniDex
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -42,6 +42,14 @@ python app.py --lan
 ```
 
 Then pair with the PC under **Settings → Peer sync** (same token + each other’s LAN URL).
+
+On PC, for AnimePahe + PDF CLI extras:
+
+```powershell
+pip install -r requirements-pahe.txt
+# or PDF only: pip install -r requirements-pdf.txt
+playwright install chromium
+```
 
 ## Run
 

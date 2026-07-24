@@ -1,0 +1,5 @@
+# Optional — MangaDex chapter → PDF CLI (mangadex_to_pdf.py).
+# Needs pikepdf → libqpdf. Skip on Termux; use in-app offline reading instead.
+#   pip install -r requirements-pdf.txt
+-r requirements.txt
+img2pdf>=0.5.1
