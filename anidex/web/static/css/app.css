@@ -198,14 +198,20 @@ label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px
   display: flex;
   flex-direction: column;
   max-height: calc(100vh - 120px);
+  min-height: 0;
+  min-width: 0;
 }
 .ep-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* Fixed min track size so hundreds of eps don't crush into slivers */
+  grid-template-columns: repeat(4, minmax(52px, 1fr));
+  grid-auto-rows: minmax(52px, auto);
   gap: 6px;
   overflow: auto;
+  overflow-x: hidden;
   padding-right: 4px;
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
   align-content: start;
 }
 .ep-tile {
@@ -216,14 +222,20 @@ label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px
   color: #cfc6ba;
   font-weight: 700;
   font-size: 12px;
-  aspect-ratio: 1;
+  aspect-ratio: 1 / 1;
   width: 100%;
-  min-height: 0;
+  min-width: 52px;
+  min-height: 52px;
+  height: auto;
+  max-height: none;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 0;
+  box-sizing: border-box;
+  /* Don't let grid stretch/squash tiles to fit the viewport */
+  align-self: start;
 }
 .ep-tile:hover { border-color: var(--accent); color: #f7f2ea; }
 .ep-tile.active {
