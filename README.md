@@ -15,12 +15,33 @@ Desktop anime & manga tracker. **Local SQLite is source of truth** — your list
 
 ## Setup
 
+### PC (Windows / Linux / macOS)
+
 ```powershell
 cd d:\Cursor\MangaCrawler
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+# AnimePahe downloads (Chrome + Playwright) — skip on phones:
+pip install -r requirements-pahe.txt
+playwright install chromium
 ```
+
+### Termux (Android)
+
+Playwright / PyAV / curl_cffi are **not** on Android — that is fine. Termux runs the web UI + peer sync; anime MP4s come from the PC.
+
+```bash
+pkg update
+pkg install python git
+cd ~/git/LocalFun   # or wherever you cloned
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python app.py --lan
+```
+
+Then pair with the PC under **Settings → Peer sync** (same token + each other’s LAN URL).
 
 ## Run
 
@@ -104,7 +125,7 @@ CLI:
 python animepahe_download.py "https://animepahe.pw/play/..."
 ```
 
-After first-time setup:
+After first-time setup **on PC**:
 
 ```powershell
 playwright install chromium

@@ -1,0 +1,9 @@
+# Optional PC-only AnimePahe download / Cloudflare browser.
+# Not available on Termux/Android — phone gets episodes via peer sync instead.
+# Install on desktop after requirements.txt:
+#   pip install -r requirements-pahe.txt
+#   playwright install chromium
+-r requirements.txt
+playwright>=1.49.0
+av>=12.0.0
+curl_cffi>=0.7.0

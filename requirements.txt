@@ -1,10 +1,8 @@
+# Core — works on PC and Termux (web UI, library, peer sync, MangaDex)
 requests>=2.32.0
 img2pdf>=0.5.1
 Pillow>=10.0.0
-playwright>=1.49.0
-av>=12.0.0
 cryptography>=42.0.0
-curl_cffi>=0.7.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 jinja2>=3.1.0

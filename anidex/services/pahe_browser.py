@@ -35,14 +35,17 @@ class _BrowserWorker(threading.Thread):
         self._playwright = None
         self._ctx = None
         self._page = None
+        self._playwright_missing = False
         self._ready = threading.Event()
 
     def run(self) -> None:
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
+            self._playwright_missing = True
             self._ready.set()
             return
+        self._playwright_missing = False
         self._playwright = sync_playwright().start()
         self._ctx = self._playwright.chromium.launch_persistent_context(
             str(profile_dir()),
@@ -96,6 +99,12 @@ class _BrowserWorker(threading.Thread):
     def submit(self, fn: Callable[[], T], timeout: float = 300.0) -> T:
         if not self._ready.wait(timeout=30):
             raise RuntimeError("Browser worker failed to start.")
+        if getattr(self, "_playwright_missing", False):
+            raise RuntimeError(
+                "AnimePahe needs Playwright (PC only). On Termux, sync episodes "
+                "from the PC instead: Settings → Peer sync. On PC: "
+                "pip install -r requirements-pahe.txt && playwright install chromium"
+            )
         if self._ctx is None or self._page is None:
             raise RuntimeError(
                 "Chrome failed to start for AnimePahe. Close any stuck Chrome "
