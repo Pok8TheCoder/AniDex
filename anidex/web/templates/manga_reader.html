@@ -12,11 +12,6 @@
         <option value="continuous">Continuous</option>
         <option value="page">1 page</option>
       </select>
-      <label class="muted" style="margin:0">Quality</label>
-      <select id="quality" style="width:auto">
-        <option value="data-saver" selected>Data saver</option>
-        <option value="data">Original</option>
-      </select>
       <button class="btn" id="btn-fs" type="button" title="Fullscreen">Fullscreen</button>
     </div>
   </div>
@@ -43,7 +38,6 @@ const MODE_KEY = "anidex.reader.mode";
 const CACHE_RADIUS = 5;
 const CACHE_PREFIX = "lf-manga-ch-";
 const modeSel = $("#mode");
-const qualitySel = $("#quality");
 modeSel.value = localStorage.getItem(MODE_KEY) === "page" ? "page" : "continuous";
 
 let pageUrls = [];
@@ -396,7 +390,6 @@ async function cacheEntireChapter(urls) {
 }
 
 async function load() {
-  const quality = qualitySel.value;
   const status = $("#reader-status");
   status.textContent = "Loading pages…";
   clearPageCache();
@@ -405,7 +398,7 @@ async function load() {
   $("#pages").innerHTML = "";
   try {
     const offlineQ = backId ? `&user_manga_id=${encodeURIComponent(backId)}` : "";
-    const data = await api(`/api/manga/chapter/${CHAPTER_ID}/read?quality=${encodeURIComponent(quality)}${offlineQ}`);
+    const data = await api(`/api/manga/chapter/${CHAPTER_ID}/read?quality=data${offlineQ}`);
     const label = [data.manga_title, `Ch.${data.chapter}`, data.title].filter(Boolean).join(" — ");
     $("#reader-title").textContent = label;
     document.title = label + " — AniDex";
@@ -445,7 +438,6 @@ modeSel.onchange = () => {
   displayUrls = displayUrls.length ? displayUrls : pageUrls.slice();
   applyRender();
 };
-qualitySel.onchange = load;
 $("#btn-fs").onclick = () => (fullscreen ? exitFullscreen() : enterFullscreen());
 $("#hit-left").onclick = (ev) => { ev.preventDefault(); prevPage(); };
 $("#hit-right").onclick = (ev) => { ev.preventDefault(); nextPage(); };

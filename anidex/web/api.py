@@ -151,7 +151,7 @@ class MangaPdfBody(BaseModel):
 class OfflineChapterBody(BaseModel):
     chapter_no: str = ""
     title: str = ""
-    quality: str = "data-saver"
+    quality: str = "data"
 
 
 # ---- profile / meta ----
@@ -830,7 +830,7 @@ def manga_offline_start(
         if existing:
             return {"ok": True, "offline": True, "pages": existing.pages}
 
-    q = "data" if body.quality == "data" else "data-saver"
+    q = "data"
     job = offline.start_download(
         user_manga_id=user_manga_id,
         chapter_id=cid,
@@ -913,7 +913,7 @@ def manga_offline_delete(user_manga_id: int, chapter_id: str) -> dict[str, Any]:
 @router.get("/manga/chapter/{chapter_id}/read")
 def manga_chapter_read(
     chapter_id: str,
-    quality: str = "data-saver",
+    quality: str = "data",
     user_manga_id: int | None = None,
 ) -> dict[str, Any]:
     from pathlib import Path
@@ -942,14 +942,15 @@ def manga_chapter_read(
                 "chapter": off.chapter_no,
                 "title": off.title,
                 "pages_count": len(files),
-                "quality": off.quality,
+                "quality": off.quality or "data",
                 "offline": True,
                 "pages": [
                     f"/api/manga/chapter/{cid}/page/{i}?offline=1" for i in range(len(files))
                 ],
             }
 
-    q = "data" if quality == "data" else "data-saver"
+    # Always original quality (ignore data-saver)
+    q = "data"
     try:
         manga_title, chapter_no, chapter_title, pages = chapter_meta(cid)
         _, urls = page_urls(cid, quality=q)
@@ -973,7 +974,7 @@ def manga_chapter_read(
 def manga_chapter_page(
     chapter_id: str,
     index: int,
-    quality: str = "data-saver",
+    quality: str = "data",
     offline: int = 0,
 ):
     from pathlib import Path
@@ -1007,7 +1008,7 @@ def manga_chapter_page(
             headers={"Cache-Control": "public, max-age=604800"},
         )
 
-    q = "data" if quality == "data" else "data-saver"
+    q = "data"
     try:
         _, urls = page_urls(cid, quality=q)
         if index < 0 or index >= len(urls):

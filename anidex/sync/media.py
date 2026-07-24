@@ -187,7 +187,7 @@ def receive_offline_zip(
             title=title or "",
             pages=pages,
             path=str(folder),
-            quality=quality or "data-saver",
+            quality=quality or "data",
             bytes_size=len(data),
         )
     finally:

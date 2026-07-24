@@ -134,7 +134,7 @@ CREATE TABLE IF NOT EXISTS manga_offline_chapter (
     title TEXT NOT NULL DEFAULT '',
     pages INTEGER NOT NULL DEFAULT 0,
     path TEXT NOT NULL,
-    quality TEXT NOT NULL DEFAULT 'data-saver',
+    quality TEXT NOT NULL DEFAULT 'data',
     bytes INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(user_manga_id, chapter_id)

@@ -1009,7 +1009,7 @@ class Repository:
         title: str = "",
         pages: int = 0,
         path: str,
-        quality: str = "data-saver",
+        quality: str = "data",
         bytes_size: int = 0,
     ) -> int:
         existing = self.get_offline_chapter(user_manga_id, chapter_id)
@@ -1111,7 +1111,7 @@ class Repository:
             title=r["title"] or "",
             pages=int(r["pages"] or 0),
             path=r["path"],
-            quality=r["quality"] or "data-saver",
+            quality=r["quality"] or "data",
             bytes=int(r["bytes"] or 0),
             created_at=r["created_at"],
         )

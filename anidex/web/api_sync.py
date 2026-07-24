@@ -231,7 +231,7 @@ async def sync_media_offline_put(
         chapter_id=chapter_id,
         chapter_no=x_anidex_chapter_no or "",
         title=x_anidex_title or "",
-        quality=x_anidex_quality or "data-saver",
+        quality=x_anidex_quality or "data",
         data=data,
     )
     return {"ok": True}

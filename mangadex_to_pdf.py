@@ -10,14 +10,6 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-try:
-    import img2pdf
-except ImportError as e:  # pragma: no cover
-    raise SystemExit(
-        "img2pdf is required for PDF export. Install with:\n"
-        "  pip install -r requirements-pdf.txt\n"
-        "(Skip on Termux — use the in-app manga reader / peer sync instead.)"
-    ) from e
 import requests
 
 API = "https://api.mangadex.org"
@@ -138,7 +130,7 @@ def fetch_bytes(url: str, *, chapter_id: str | None = None, quality: str = "data
     raise RuntimeError(f"Failed to download {url}: {last_err}")
 
 
-def preview_image_bytes(chapter_id: str, *, quality: str = "data-saver") -> bytes:
+def preview_image_bytes(chapter_id: str, *, quality: str = "data") -> bytes:
     _, urls = page_urls(chapter_id, quality=quality)
     if not urls:
         raise RuntimeError("Chapter has no pages")
@@ -195,6 +187,14 @@ def download_pages(
 
 
 def images_to_pdf(images: list[Path], pdf_path: Path) -> None:
+    try:
+        import img2pdf
+    except ImportError as e:  # pragma: no cover
+        raise RuntimeError(
+            "img2pdf is required for PDF export. Install with:\n"
+            "  pip install -r requirements-pdf.txt\n"
+            "(Offline chapter downloads save page images and do not need img2pdf.)"
+        ) from e
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
     with pdf_path.open("wb") as f:
         f.write(img2pdf.convert([str(p) for p in images]))

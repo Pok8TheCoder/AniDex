@@ -84,7 +84,7 @@ def _upload_media_to_peer(
             "Content-Type": "application/zip",
             "X-AniDex-Chapter-No": meta.get("chapter_no") or "",
             "X-AniDex-Title": meta.get("title") or "",
-            "X-AniDex-Quality": meta.get("quality") or "data-saver",
+            "X-AniDex-Quality": meta.get("quality") or "data",
         }
         r = client.put(
             urljoin(peer + "/", f"api/sync/media/offline/{quote(mid)}/{quote(cid)}"),
@@ -183,7 +183,7 @@ def run_sync(peer_url: str | None = None) -> dict[str, Any]:
                         chapter_id=cid,
                         chapter_no=meta.get("chapter_no") or "",
                         title=meta.get("title") or "",
-                        quality=meta.get("quality") or "data-saver",
+                        quality=meta.get("quality") or "data",
                         data=data,
                     )
                     result["offline_downloaded"] += 1

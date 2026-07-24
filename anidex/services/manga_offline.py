@@ -62,7 +62,7 @@ def start_download(
     chapter_id: str,
     chapter_no: str = "",
     title: str = "",
-    quality: str = "data-saver",
+    quality: str = "data",
 ) -> Job:
     key = (user_manga_id, chapter_id)
     existing = active_job(user_manga_id, chapter_id)
