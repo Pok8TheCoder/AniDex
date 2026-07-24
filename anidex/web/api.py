@@ -15,6 +15,15 @@ from anidex.web.security import redact_job_result, redact_path
 router = APIRouter(prefix="/api", tags=["api"])
 
 
+def _mark_sync_dirty(reason: str = "") -> None:
+    try:
+        from anidex.sync import live as live_sync
+
+        live_sync.mark_dirty(reason=reason)
+    except Exception:
+        pass
+
+
 def _anime_dict(e) -> dict[str, Any]:
     return {
         "user_anime_id": e.user_anime_id,
@@ -525,6 +534,7 @@ def add_anime(body: SearchAddAnime) -> dict[str, Any]:
         ua = repo.set_user_anime(anime_id, list_status=body.list_status)
         e = repo.get_user_anime(ua)
         assert e
+        _mark_sync_dirty("anime_add")
         return _anime_dict(e)
 
 
@@ -547,6 +557,8 @@ def update_anime(user_anime_id: int, body: AnimeUpdate) -> dict[str, Any]:
             repo.update_user_anime_fields(user_anime_id, **fields)
         e = repo.get_user_anime(user_anime_id)
         assert e
+        if fields:
+            _mark_sync_dirty("anime_update")
         return _anime_dict(e)
 
 
@@ -554,6 +566,7 @@ def update_anime(user_anime_id: int, body: AnimeUpdate) -> dict[str, Any]:
 def delete_anime(user_anime_id: int) -> dict[str, Any]:
     with repo_ctx() as repo:
         repo.remove_user_anime(user_anime_id)
+    _mark_sync_dirty("anime_delete")
     return {"ok": True}
 
 
@@ -660,6 +673,7 @@ def add_manga(body: SearchAddManga) -> dict[str, Any]:
         um = repo.set_user_manga(manga_id, list_status=body.list_status)
         e = repo.get_user_manga(um)
         assert e
+        _mark_sync_dirty("manga_add")
         return _manga_dict(e)
 
 
@@ -1049,6 +1063,8 @@ def update_manga(user_manga_id: int, body: MangaUpdate) -> dict[str, Any]:
             repo.update_user_manga_fields(user_manga_id, **fields)
         e = repo.get_user_manga(user_manga_id)
         assert e
+        if fields:
+            _mark_sync_dirty("manga_update")
         return _manga_dict(e)
 
 
@@ -1056,6 +1072,7 @@ def update_manga(user_manga_id: int, body: MangaUpdate) -> dict[str, Any]:
 def delete_manga(user_manga_id: int) -> dict[str, Any]:
     with repo_ctx() as repo:
         repo.remove_user_manga(user_manga_id)
+    _mark_sync_dirty("manga_delete")
     return {"ok": True}
 
 
@@ -1199,11 +1216,135 @@ def watch_resolve(body: ResolveBody) -> dict[str, Any]:
 
 @router.post("/watch/download")
 def watch_download(body: DownloadBody) -> dict[str, Any]:
+    from anidex.sync.capabilities import playwright_available
+    from anidex.sync import live as live_sync
+
+    # Termux / no Playwright: ask PC peer to download, then sync the file here
+    if not playwright_available():
+        def remote_work(job) -> dict[str, Any]:
+            import time
+            from urllib.parse import urljoin
+
+            import httpx
+
+            from anidex.sync.client import run_sync
+            from anidex.sync.token import ensure_sync_identity
+            from anidex.web.deps import repo_ctx as rc
+
+            ident = ensure_sync_identity()
+            peer = (ident.get("peer_url") or "").rstrip("/")
+            token = ident.get("sync_token") or ""
+            if not peer or not token:
+                raise RuntimeError(
+                    "No peer configured. Set Peer URL + sync token in Settings, "
+                    "or download on the PC and Sync."
+                )
+            # Prefer live capability; still try if peer was recently reachable
+            if not (
+                live_sync.is_connected()
+                or live_sync.peer_has("remote_download")
+            ):
+                # One-shot hello probe
+                headers = {
+                    "Authorization": f"Bearer {token}",
+                    "X-AniDex-Sync-Token": token,
+                }
+                try:
+                    with httpx.Client(timeout=8.0) as client:
+                        hello = client.get(
+                            urljoin(peer + "/", "api/sync/hello"), headers=headers
+                        )
+                        caps = (hello.json() or {}).get("capabilities") or []
+                        if hello.status_code != 200 or "remote_download" not in caps:
+                            raise RuntimeError(
+                                "Peer cannot download AnimePahe right now. "
+                                "Start the PC with --lan and Playwright installed."
+                            )
+                except RuntimeError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    raise RuntimeError(
+                        f"Peer unreachable for remote download: {exc}"
+                    ) from exc
+
+            mal_id = None
+            title = ""
+            with rc() as repo:
+                e = repo.get_user_anime(body.user_anime_id)
+                if not e:
+                    raise RuntimeError("Anime not found")
+                mal_id = e.mal_id
+                title = e.title_english or e.title or ""
+
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "X-AniDex-Sync-Token": token,
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "anime_session": body.anime_session,
+                "episode_session": body.episode_session,
+                "episode": body.episode,
+                "audio": body.audio,
+                "resolution": body.resolution,
+                "mal_id": mal_id,
+                "title": title,
+            }
+            job.message = "Asking PC to download…"
+            with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+                start = client.post(
+                    urljoin(peer + "/", "api/sync/remote-download"),
+                    headers=headers,
+                    json=payload,
+                )
+                if start.status_code >= 400:
+                    detail = start.text
+                    try:
+                        detail = start.json().get("detail") or detail
+                    except Exception:
+                        pass
+                    raise RuntimeError(f"Peer download refused: {detail}")
+                remote_id = start.json().get("job_id")
+                if not remote_id:
+                    raise RuntimeError("Peer did not return a job id")
+
+                while True:
+                    time.sleep(0.8)
+                    st = client.get(
+                        urljoin(peer + "/", f"api/sync/remote-download/{remote_id}"),
+                        headers=headers,
+                    )
+                    st.raise_for_status()
+                    remote = st.json()
+                    job.message = f"PC: {remote.get('message') or remote.get('status')}"
+                    job.progress = int(remote.get("progress") or 0)
+                    job.total = int(remote.get("total") or 0)
+                    status = remote.get("status")
+                    if status == "done":
+                        break
+                    if status == "error":
+                        raise RuntimeError(
+                            remote.get("error") or remote.get("message") or "Peer download failed"
+                        )
+
+            job.message = "Syncing file from PC…"
+            result = run_sync(peer)
+            live_sync.mark_dirty(reason="after_remote_download")
+            return {
+                "remote": True,
+                "synced": bool(result and result.get("ok")),
+                "media_downloaded": (result or {}).get("media_downloaded"),
+            }
+
+        job = JOBS.submit("download", remote_work)
+        return {"job_id": job.id, "remote": True}
+
     def work(job) -> dict[str, Any]:
         from pathlib import Path
 
         from anidex.services.anime_download import download_episode
         from anidex.services.pahe_catalog import play_url
+        from anidex.sync import live as live_mod
         from anidex.web.deps import repo_ctx as rc
 
         job.message = "Starting download…"
@@ -1244,6 +1385,12 @@ def watch_download(body: DownloadBody) -> dict[str, Any]:
                 repo.update_user_anime_fields(
                     body.user_anime_id, local_folder=str(path.parent)
                 )
+            mal_id = entry.mal_id if entry else None
+        live_mod.notify_download_done(
+            mal_id=mal_id,
+            episode=body.episode,
+            key=f"media:{mal_id}:{body.episode}:{body.episode_session}",
+        )
         return {"media_id": mid, "path": redact_path(path)}
 
     job = JOBS.submit("download", work)

@@ -55,7 +55,8 @@
     <p class="muted" id="paths"></p>
 
     <div class="section" style="margin-top:18px">Peer sync</div>
-    <p class="muted">Mesh-merge libraries between PC and Termux. Both devices need <code>--lan</code>, the <strong>same sync token</strong>, and each other’s LAN URL.</p>
+    <p class="muted">Mesh-merge libraries between PC and Termux. Both devices need <code>--lan</code>, the <strong>same sync token</strong>, and each other’s LAN URL. While live-connected, changes sync automatically.</p>
+    <p class="status" id="sync-live">Live: …</p>
     <div class="field"><label>Device ID</label><input id="sync-device" readonly /></div>
     <div class="field"><label>Sync token</label><input id="sync-token" /></div>
     <div class="field"><label>Peer URL</label><input id="sync-peer" placeholder="http://192.168.x.x:8787" /></div>
@@ -106,6 +107,11 @@ async function loadSync() {
     $("#sync-device").value = s.device_id || "";
     $("#sync-token").value = s.sync_token || "";
     $("#sync-peer").value = s.peer_url || "";
+    const live = s.live || {};
+    const state = live.state || "offline";
+    const err = live.last_error ? ` — ${live.last_error}` : "";
+    const peer = live.peer_device_id ? ` · peer ${String(live.peer_device_id).slice(0, 8)}…` : "";
+    $("#sync-live").textContent = `Live: ${state}${peer}${err}`;
     const list = $("#sync-logs");
     list.innerHTML = "";
     (s.logs || []).forEach((row) => {
@@ -121,6 +127,7 @@ async function loadSync() {
     $("#sync-msg").textContent = e.message;
   }
 }
+setInterval(() => { loadSync().catch(() => {}); }, 8000);
 async function load() {
   const p = await api("/api/profile");
   $("#name").value = p.display_name || "";

@@ -30,7 +30,14 @@ async def lifespan(_app: FastAPI):
     from anidex.sync.token import ensure_sync_identity
 
     ensure_sync_identity()
+    from anidex.sync import live as live_sync
+
+    live_sync.start()
     yield
+    try:
+        await live_sync.stop()
+    except Exception:
+        pass
     try:
         from anidex.services.pahe_browser import close_browser
 

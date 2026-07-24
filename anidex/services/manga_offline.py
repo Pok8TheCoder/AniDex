@@ -124,6 +124,12 @@ def start_download(
                 conn.close()
 
             job.message = f"Ch.{label_no} · saved {len(images)}p"
+            try:
+                from anidex.sync import live as live_sync
+
+                live_sync.mark_dirty(reason="manga_offline")
+            except Exception:
+                pass
             return {
                 "chapter_id": cid,
                 "pages": len(images),
@@ -153,6 +159,12 @@ def delete_offline(user_manga_id: int, chapter_id: str) -> bool:
             repo.delete_offline_chapter(user_manga_id, chapter_id)
             if folder.is_dir():
                 shutil.rmtree(folder, ignore_errors=True)
+            try:
+                from anidex.sync import live as live_sync
+
+                live_sync.mark_dirty(reason="manga_offline_delete")
+            except Exception:
+                pass
             return True
     finally:
         conn.close()

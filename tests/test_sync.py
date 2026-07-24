@@ -106,6 +106,7 @@ class SyncApiTests(unittest.TestCase):
         self.assertEqual(body["app"], "AniDex")
         self.assertIn("device_id", body)
         self.assertIn("library", body["capabilities"])
+        self.assertIn("live_ws", body["capabilities"])
 
     def test_manifest_and_status(self) -> None:
         r = self.client.get("/api/sync/manifest", headers=self.headers)
@@ -113,7 +114,37 @@ class SyncApiTests(unittest.TestCase):
         self.assertEqual(r.json()["app"], "AniDex")
         r = self.client.get("/api/sync/status")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json()["sync_token"], self.token)
+        body = r.json()
+        self.assertEqual(body["sync_token"], self.token)
+        self.assertIn("live", body)
+        self.assertIn("state", body["live"])
+
+    def test_remote_download_requires_token(self) -> None:
+        r = self.client.post(
+            "/api/sync/remote-download",
+            json={
+                "anime_session": "a",
+                "episode_session": "b",
+                "mal_id": 1,
+            },
+        )
+        self.assertEqual(r.status_code, 401)
+
+    def test_remote_download_rejects_without_playwright(self) -> None:
+        with mock.patch(
+            "anidex.web.api_sync.playwright_available", return_value=False
+        ):
+            r = self.client.post(
+                "/api/sync/remote-download",
+                headers=self.headers,
+                json={
+                    "anime_session": "a",
+                    "episode_session": "b",
+                    "mal_id": 1,
+                    "title": "Test",
+                },
+            )
+        self.assertEqual(r.status_code, 503)
 
     def test_push_pull_progress_merge(self) -> None:
         from anidex.db.schema import open_repo
@@ -167,6 +198,36 @@ class SyncApiTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         anime = r.json()["batches"]["anime"]
         self.assertEqual(anime[0]["progress"], 11)
+
+
+class CapabilitiesTests(unittest.TestCase):
+    def test_local_capabilities_always_has_live(self) -> None:
+        from anidex.sync.capabilities import local_capabilities
+
+        caps = local_capabilities()
+        self.assertIn("library", caps)
+        self.assertIn("live_ws", caps)
+
+    def test_playwright_gate(self) -> None:
+        from anidex.sync import capabilities as caps_mod
+
+        with mock.patch.object(caps_mod, "playwright_available", return_value=True):
+            c = caps_mod.local_capabilities()
+            self.assertIn("playwright", c)
+            self.assertIn("remote_download", c)
+        with mock.patch.object(caps_mod, "playwright_available", return_value=False):
+            c = caps_mod.local_capabilities()
+            self.assertNotIn("playwright", c)
+            self.assertNotIn("remote_download", c)
+
+    def test_mark_dirty_while_syncing_is_noop(self) -> None:
+        from anidex.sync import live as live_sync
+
+        live_sync._syncing = True
+        try:
+            live_sync.mark_dirty(reason="test")
+        finally:
+            live_sync._syncing = False
 
 
 class TwoDbMergeTests(unittest.TestCase):

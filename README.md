@@ -75,7 +75,9 @@ Mesh-merge libraries and media between two AniDex instances on the same Wi‑Fi.
 2. Open **Settings → Peer sync** on each device
 3. Copy the **sync token** from one device onto the other (must match)
 4. Set **Peer URL** to the other device’s LAN URL (e.g. `http://192.168.1.10:8787`)
-5. Tap **Sync now** (or run CLI below)
+5. Save — devices open a **live WebSocket** and sync automatically while connected (Settings shows Live: connected). **Sync now** still works as a manual fallback.
+
+On Termux (no Playwright), tapping **Download** for an anime episode asks the PC peer to download it, then pulls the MP4 over sync. Keep the PC online with `--lan` and AnimePahe Cloudflare cleared.
 
 Synced: anime/manga list entries, episode/chapter progress, scores, manga read page positions, anime MP4 downloads, offline manga chapters.
 

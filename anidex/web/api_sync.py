@@ -1,15 +1,17 @@
-"""Peer sync HTTP API."""
+"""Peer sync HTTP API + live WebSocket."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from anidex.db.schema import open_repo
 from anidex.sync import APP_NAME, PROTOCOL_VERSION
+from anidex.sync import live as live_sync
+from anidex.sync.capabilities import hello_payload, local_capabilities, playwright_available
 from anidex.sync.client import run_sync
 from anidex.sync.manifest import apply_batches, build_manifest, export_entities
 from anidex.sync.media import (
@@ -28,6 +30,7 @@ from anidex.sync.token import (
     set_sync_token,
     sync_token_ok,
 )
+from anidex.web.jobs import JOBS
 
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 
@@ -41,7 +44,6 @@ def _extract_token(
         return x_token.strip()
     if authorization and authorization.lower().startswith("bearer "):
         return authorization[7:].strip()
-    # also accept query for simple tools
     return request.query_params.get("token")
 
 
@@ -67,6 +69,17 @@ class RunBody(BaseModel):
     peer_url: str | None = None
 
 
+class RemoteDownloadBody(BaseModel):
+    anime_session: str
+    episode_session: str
+    episode: float | None = None
+    audio: str = "jpn"
+    resolution: int = 1080
+    mal_id: int | None = None
+    title: str = ""
+    user_anime_id: int | None = None
+
+
 @router.get("/hello")
 def sync_hello(
     request: Request,
@@ -75,12 +88,32 @@ def sync_hello(
 ) -> dict[str, Any]:
     require_sync_token(request, authorization, x_anidex_sync_token)
     ident = ensure_sync_identity()
-    return {
-        "app": APP_NAME,
-        "protocol": PROTOCOL_VERSION,
-        "device_id": ident["device_id"],
-        "capabilities": ["library", "anime_media", "manga_offline", "positions"],
-    }
+    return hello_payload(ident["device_id"], app=APP_NAME, protocol=PROTOCOL_VERSION)
+
+
+@router.websocket("/ws")
+async def sync_ws(websocket: WebSocket) -> None:
+    """Persistent peer channel for auto-sync signals."""
+    token = (
+        websocket.query_params.get("token")
+        or websocket.headers.get("x-anidex-sync-token")
+        or websocket.headers.get("authorization", "")
+    )
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    if not sync_token_ok(token):
+        await websocket.close(code=4401)
+        return
+    await websocket.accept()
+    try:
+        await live_sync.handle_inbound(websocket)
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @router.get("/manifest")
@@ -182,7 +215,6 @@ async def sync_media_anime_put(
     x_anidex_filename: str | None = Header(default=None, alias="X-AniDex-Filename"),
     x_anidex_title: str | None = Header(default=None, alias="X-AniDex-Title"),
 ):
-    """Receive anime episode bytes from a peer."""
     require_sync_token(request, authorization, x_anidex_sync_token)
     if not x_anidex_mal_id:
         raise HTTPException(400, "Missing X-AniDex-Mal-Id")
@@ -237,9 +269,121 @@ async def sync_media_offline_put(
     return {"ok": True}
 
 
+def _run_remote_download_job(body: RemoteDownloadBody):
+    from pathlib import Path
+
+    from anidex.paths import output_dir
+    from anidex.services.anime_download import download_episode
+    from anidex.services.pahe_catalog import play_url
+    from anidex.web.deps import repo_ctx
+    from anidex.web.security import redact_path
+
+    if not playwright_available():
+        raise HTTPException(
+            503,
+            "This peer cannot download AnimePahe (Playwright missing).",
+        )
+
+    def work(job) -> dict[str, Any]:
+        job.message = "Remote download starting…"
+        url = play_url(body.anime_session, body.episode_session)
+        user_anime_id = body.user_anime_id
+        with repo_ctx() as repo:
+            e = None
+            if user_anime_id:
+                e = repo.get_user_anime(user_anime_id)
+            if e is None and body.mal_id:
+                for row in repo.list_user_anime():
+                    if row.mal_id == body.mal_id:
+                        e = row
+                        user_anime_id = row.user_anime_id
+                        break
+            if e is None and body.mal_id:
+                anime_id = repo.upsert_anime(
+                    mal_id=body.mal_id,
+                    title=body.title or f"MAL {body.mal_id}",
+                )
+                user_anime_id = repo.set_user_anime(anime_id, list_status="watching")
+                e = repo.get_user_anime(user_anime_id)
+            if not e or not user_anime_id:
+                raise RuntimeError("Anime not found for remote download")
+            out = Path(e.local_folder) if e.local_folder else output_dir() / "anime"
+
+        def on_log(msg: str) -> None:
+            job.message = msg
+
+        def on_progress(done: int, total: int) -> None:
+            job.progress = done
+            job.total = total
+
+        result = download_episode(
+            url,
+            out_dir=out,
+            resolution=body.resolution,
+            audio=body.audio,
+            on_log=on_log,
+            on_progress=on_progress,
+        )
+        path = Path(result.path)
+        with repo_ctx() as repo:
+            mid = repo.add_media(
+                user_anime_id=user_anime_id,
+                path=str(path),
+                pahe_episode_session=body.episode_session,
+                episode=body.episode,
+                label=path.name,
+                bytes_size=path.stat().st_size if path.is_file() else 0,
+            )
+            entry = repo.get_user_anime(user_anime_id)
+            if entry and not entry.local_folder:
+                repo.update_user_anime_fields(
+                    user_anime_id, local_folder=str(path.parent)
+                )
+            mal_id = entry.mal_id if entry else body.mal_id
+
+        live_sync.notify_download_done(
+            mal_id=mal_id,
+            episode=body.episode,
+            key=f"media:{mal_id}:{body.episode}:{body.episode_session}",
+        )
+        return {
+            "media_id": mid,
+            "path": redact_path(path),
+            "mal_id": mal_id,
+            "episode": body.episode,
+        }
+
+    return JOBS.submit("remote_download", work)
+
+
+@router.post("/remote-download")
+def sync_remote_download(
+    body: RemoteDownloadBody,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_anidex_sync_token: str | None = Header(default=None, alias="X-AniDex-Sync-Token"),
+) -> dict[str, Any]:
+    require_sync_token(request, authorization, x_anidex_sync_token)
+    job = _run_remote_download_job(body)
+    return {"job_id": job.id, "ok": True}
+
+
+@router.get("/remote-download/{job_id}")
+def sync_remote_download_status(
+    job_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_anidex_sync_token: str | None = Header(default=None, alias="X-AniDex-Sync-Token"),
+) -> dict[str, Any]:
+    require_sync_token(request, authorization, x_anidex_sync_token)
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    return job.to_dict()
+
+
 @router.get("/status")
 def sync_status(request: Request) -> dict[str, Any]:
-    """Local status — loopback or logged-in session handled by middleware."""
     from anidex.web import security as websec
 
     if not websec.client_is_loopback(request) and not websec.session_ok(request):
@@ -250,6 +394,8 @@ def sync_status(request: Request) -> dict[str, Any]:
         "sync_token": ident["sync_token"],
         "peer_url": ident["peer_url"],
         "logs": recent_sync_logs(15),
+        "live": live_sync.status(),
+        "capabilities": local_capabilities(),
     }
 
 
@@ -268,7 +414,8 @@ def sync_settings(request: Request, body: ConfigBody) -> dict[str, Any]:
         set_peer_url(body.peer_url)
     if body.sync_token:
         set_sync_token(body.sync_token)
-    return {"ok": True, **get_sync_identity()}
+    live_sync.kick()
+    return {"ok": True, **get_sync_identity(), "live": live_sync.status()}
 
 
 @router.post("/rotate-token")
@@ -278,6 +425,7 @@ def sync_rotate(request: Request) -> dict[str, Any]:
     if not websec.client_is_loopback(request):
         raise HTTPException(403, "Rotate token only from this PC")
     token = rotate_sync_token()
+    live_sync.kick()
     return {"ok": True, "sync_token": token, **get_sync_identity()}
 
 
