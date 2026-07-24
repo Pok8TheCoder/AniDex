@@ -316,6 +316,9 @@ def _run_remote_download_job(body: RemoteDownloadBody):
             if not e or not user_anime_id:
                 raise RuntimeError("Anime not found for remote download")
             out = Path(e.local_folder) if e.local_folder else output_dir() / "anime"
+            job.meta["title"] = e.title_english or e.title or body.title or job.meta.get("title") or ""
+            job.meta["cover_url"] = e.cover_url or ""
+            job.meta["user_anime_id"] = user_anime_id
 
         def on_log(msg: str) -> None:
             job.message = msg
@@ -361,7 +364,19 @@ def _run_remote_download_job(body: RemoteDownloadBody):
             "episode": body.episode,
         }
 
-    return JOBS.submit("remote_download", work)
+    return JOBS.submit(
+        "remote_download",
+        work,
+        meta={
+            "title": body.title or "",
+            "episode": body.episode,
+            "user_anime_id": body.user_anime_id,
+            "mal_id": body.mal_id,
+            "episode_session": body.episode_session,
+            "audio": body.audio,
+            "resolution": body.resolution,
+        },
+    )
 
 
 @router.post("/remote-download")

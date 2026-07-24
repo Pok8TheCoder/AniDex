@@ -413,12 +413,43 @@ def discover_manga() -> dict[str, Any]:
         return build_manga_discover(repo)
 
 
+def _download_job_meta(body: DownloadBody) -> dict[str, Any]:
+    title = ""
+    cover_url = ""
+    with repo_ctx() as repo:
+        e = repo.get_user_anime(body.user_anime_id)
+        if e:
+            title = e.title_english or e.title or ""
+            cover_url = e.cover_url or ""
+    return {
+        "title": title,
+        "cover_url": cover_url,
+        "episode": body.episode,
+        "user_anime_id": body.user_anime_id,
+        "episode_session": body.episode_session,
+        "audio": body.audio,
+        "resolution": body.resolution,
+    }
+
+
 @router.get("/downloads")
 def list_downloads() -> dict[str, Any]:
     with repo_ctx() as repo:
         items = repo.list_all_media()
     total_bytes = sum(int(x.get("bytes") or 0) for x in items)
-    return {"count": len(items), "total_bytes": total_bytes, "items": items}
+    active = [
+        j.to_dict()
+        for j in JOBS.list(
+            kinds={"download", "remote_download"},
+            statuses={"pending", "running"},
+        )
+    ]
+    return {
+        "count": len(items),
+        "total_bytes": total_bytes,
+        "items": items,
+        "active": active,
+    }
 
 
 @router.get("/upcoming")
@@ -1268,6 +1299,8 @@ def watch_download(body: DownloadBody) -> dict[str, Any]:
     from anidex.sync.capabilities import playwright_available
     from anidex.sync import live as live_sync
 
+    meta = _download_job_meta(body)
+
     # Termux / no Playwright: ask PC peer to download, then sync the file here
     if not playwright_available():
         def remote_work(job) -> dict[str, Any]:
@@ -1317,13 +1350,13 @@ def watch_download(body: DownloadBody) -> dict[str, Any]:
                     ) from exc
 
             mal_id = None
-            title = ""
+            title = meta.get("title") or ""
             with rc() as repo:
                 e = repo.get_user_anime(body.user_anime_id)
                 if not e:
                     raise RuntimeError("Anime not found")
                 mal_id = e.mal_id
-                title = e.title_english or e.title or ""
+                title = e.title_english or e.title or title
 
             headers = {
                 "Authorization": f"Bearer {token}",
@@ -1402,7 +1435,7 @@ def watch_download(body: DownloadBody) -> dict[str, Any]:
                 "media_downloaded": (result or {}).get("media_downloaded"),
             }
 
-        job = JOBS.submit("download", remote_work)
+        job = JOBS.submit("download", remote_work, meta=meta)
         return {"job_id": job.id, "remote": True}
 
     def work(job) -> dict[str, Any]:
@@ -1459,7 +1492,7 @@ def watch_download(body: DownloadBody) -> dict[str, Any]:
         )
         return {"media_id": mid, "path": redact_path(path)}
 
-    job = JOBS.submit("download", work)
+    job = JOBS.submit("download", work, meta=meta)
     return {"job_id": job.id}
 
 

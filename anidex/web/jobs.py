@@ -20,6 +20,7 @@ class Job:
     total: int = 0
     result: Any = None
     error: str | None = None
+    meta: dict[str, Any] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -33,6 +34,7 @@ class Job:
             "total": self.total,
             "result": self.result,
             "error": self.error,
+            "meta": dict(self.meta or {}),
         }
 
 
@@ -46,8 +48,29 @@ class JobRegistry:
         with self._lock:
             return self._jobs.get(job_id)
 
-    def submit(self, kind: str, fn: Callable[[Job], Any]) -> Job:
-        job = Job(id=secrets.token_urlsafe(10), kind=kind)
+    def list(
+        self,
+        *,
+        kinds: set[str] | None = None,
+        statuses: set[str] | None = None,
+    ) -> list[Job]:
+        with self._lock:
+            jobs = list(self._jobs.values())
+        if kinds is not None:
+            jobs = [j for j in jobs if j.kind in kinds]
+        if statuses is not None:
+            jobs = [j for j in jobs if j.status in statuses]
+        jobs.sort(key=lambda j: j.created_at, reverse=True)
+        return jobs
+
+    def submit(
+        self,
+        kind: str,
+        fn: Callable[[Job], Any],
+        *,
+        meta: dict[str, Any] | None = None,
+    ) -> Job:
+        job = Job(id=secrets.token_urlsafe(10), kind=kind, meta=dict(meta or {}))
         with self._lock:
             self._jobs[job.id] = job
 
