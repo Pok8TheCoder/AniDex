@@ -808,6 +808,20 @@ def manga_chapters(
     }
 
 
+@router.get("/manga/{user_manga_id}/chapters/meta")
+def manga_chapters_meta(user_manga_id: int) -> dict[str, Any]:
+    """Local-only overlay for cached chapter lists (offline saves, read positions)."""
+    with repo_ctx() as repo:
+        if not repo.get_user_manga(user_manga_id):
+            raise HTTPException(404, "Manga not found")
+        offline = {
+            o.chapter_id: {"pages": o.pages}
+            for o in repo.list_offline_chapters(user_manga_id)
+        }
+        positions = repo.list_read_positions(user_manga_id)
+    return {"offline": offline, "positions": positions}
+
+
 @router.get("/manga/{user_manga_id}/chapters/{chapter_id}/position")
 def manga_get_position(user_manga_id: int, chapter_id: str) -> dict[str, Any]:
     from mangadex_to_pdf import parse_chapter_id

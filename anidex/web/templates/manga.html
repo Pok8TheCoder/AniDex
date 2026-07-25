@@ -294,51 +294,225 @@ let chLoading = false;
 let chHasMore = false;
 let chLang = "en";
 
-async function loadChapters({ reset = true } = {}) {
+const CH_CACHE_PREFIX = "anidex.manga.chapters.v1.";
+
+function chCacheKey(userMangaId, lang) {
+  return `${CH_CACHE_PREFIX}${userMangaId}.${lang}`;
+}
+
+function readChCache(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || !Array.isArray(data.chapters)) return null;
+    return data;
+  } catch (_) {
+    return null;
+  }
+}
+
+function slimChapter(ch) {
+  return {
+    id: ch.id,
+    chapter: ch.chapter,
+    title: ch.title,
+    pages: ch.pages,
+  };
+}
+
+function writeChCache(key, data) {
+  try {
+    const payload = {
+      at: Date.now(),
+      total: data.total || 0,
+      language_counts: data.language_counts || null,
+      lang: data.lang,
+      chapters: (data.chapters || []).map(slimChapter),
+    };
+    localStorage.setItem(key, JSON.stringify(payload));
+  } catch (_) {
+    // Storage full — drop oldest chapter caches and retry once
+    try {
+      const keys = Object.keys(localStorage).filter((k) => k.startsWith(CH_CACHE_PREFIX));
+      keys.sort((a, b) => {
+        const ta = (readChCache(a) || {}).at || 0;
+        const tb = (readChCache(b) || {}).at || 0;
+        return ta - tb;
+      });
+      keys.slice(0, Math.max(1, Math.floor(keys.length / 4))).forEach((k) => localStorage.removeItem(k));
+      localStorage.setItem(key, JSON.stringify({
+        at: Date.now(),
+        total: data.total || 0,
+        language_counts: data.language_counts || null,
+        lang: data.lang,
+        chapters: (data.chapters || []).map(slimChapter),
+      }));
+    } catch (__) {}
+  }
+}
+
+function mergeChCachePage(key, data, reset) {
+  const prev = reset ? null : readChCache(key);
+  const incoming = (data.chapters || []).map(slimChapter);
+  const byId = new Map();
+  if (prev && !reset) {
+    prev.chapters.forEach((ch) => { if (ch.id) byId.set(ch.id, ch); });
+  }
+  incoming.forEach((ch) => { if (ch.id) byId.set(ch.id, ch); });
+  writeChCache(key, {
+    total: data.total,
+    language_counts: data.language_counts || (prev && prev.language_counts) || null,
+    lang: data.lang,
+    chapters: [...byId.values()],
+  });
+}
+
+async function fetchChaptersMeta(userMangaId) {
+  try {
+    return await api(`/api/manga/${userMangaId}/chapters/meta`);
+  } catch (_) {
+    return { offline: {}, positions: {} };
+  }
+}
+
+function applyChapterMeta(chapters, meta) {
+  const offline = meta.offline || {};
+  const positions = meta.positions || {};
+  chapters.forEach((ch) => {
+    const cid = ch.id || "";
+    const off = offline[cid];
+    ch.offline = !!off;
+    ch.offline_pages = off ? (off.pages || 0) : 0;
+    if (cid in positions) ch.resume_page = positions[cid];
+    else delete ch.resume_page;
+    ch.download = null;
+  });
+}
+
+function formatCacheAge(at) {
+  if (!at) return "";
+  const mins = Math.round((Date.now() - at) / 60000);
+  if (mins < 2) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 48) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
+}
+
+function renderChapterBatch(data, { reset, pendingJobs = [] }) {
+  const box = $("#ch-list");
+  const msg = $("#ch-msg");
+  if (reset) box.innerHTML = "";
+
+  if (reset && data.language_counts) {
+    applyLanguageCounts(data.language_counts, data.lang);
+  }
+  chTotal = data.total || 0;
+  data.chapters.forEach((ch) => {
+    const row = appendChapterRow(box, ch, data.lang || chLang);
+    const dl = ch.download;
+    const busy = !!(dl && (dl.status === "pending" || dl.status === "running"));
+    const cb = row.querySelector("input[type=checkbox]");
+    if (busy && dl.job_id) pendingJobs.push({ id: ch.id, jobId: dl.job_id, row, cb });
+  });
+  chOffset = reset ? data.chapters.length : chOffset + data.chapters.length;
+  chHasMore = chOffset < chTotal && data.chapters.length > 0;
+
+  if (!chOffset) {
+    msg.textContent = `No ${(data.lang || chLang).toUpperCase()} chapters on MangaDex for this title.`;
+  } else {
+    let note = chHasMore
+      ? `${chOffset} / ${chTotal} chapter(s) · scroll for more · ☑ = offline`
+      : `${chOffset} / ${chTotal} chapter(s) · ☑ = offline`;
+    if (chTotal > 0 && chTotal < 20 && (data.lang || chLang) === "en") {
+      note += " · EN may only have extras — try another language";
+    }
+    msg.textContent = note;
+  }
+  pendingJobs.forEach(({ id, jobId, row, cb }) => trackDownload(id, jobId, row, cb));
+}
+
+async function loadChapters({ reset = true, forceOnline = false } = {}) {
   if (!selected) return;
   const box = $("#ch-list");
   const msg = $("#ch-msg");
+  chLang = $("#ch-lang").value;
+  const cacheKey = chCacheKey(selected.user_manga_id, chLang);
+
   if (reset) {
-    box.innerHTML = "";
     chOffset = 0;
     chTotal = 0;
     chHasMore = true;
+  }
+  if (chLoading || (!reset && !chHasMore)) return;
+  if (!reset && navigator.onLine === false) {
+    chHasMore = false;
+    return;
+  }
+  chLoading = true;
+
+  let usedCache = false;
+  if (reset && !forceOnline) {
+    const cached = readChCache(cacheKey);
+    if (cached && cached.chapters.length) {
+      const meta = await fetchChaptersMeta(selected.user_manga_id);
+      const chapters = cached.chapters.map((c) => ({ ...c }));
+      applyChapterMeta(chapters, meta);
+      renderChapterBatch(
+        {
+          total: cached.total || chapters.length,
+          language_counts: cached.language_counts,
+          lang: cached.lang || chLang,
+          chapters,
+        },
+        { reset: true }
+      );
+      usedCache = true;
+      msg.textContent = `Cached chapters (${formatCacheAge(cached.at)}) — ${navigator.onLine !== false ? "refreshing…" : "offline"}`;
+    } else if (!navigator.onLine) {
+      msg.textContent = "Offline — no cached chapters for this title yet.";
+      chLoading = false;
+      return;
+    } else {
+      msg.textContent = "Loading chapters…";
+    }
+  } else if (reset) {
     msg.textContent = "Loading chapters…";
   }
-  if (chLoading || !chHasMore) return;
-  chLoading = true;
+
+  if (!navigator.onLine && reset) {
+    if (!usedCache) {
+      msg.textContent = "Offline — no cached chapters for this title yet.";
+    }
+    chLoading = false;
+    return;
+  }
+
   try {
-    chLang = $("#ch-lang").value;
     const data = await api(
-      `/api/manga/${selected.user_manga_id}/chapters?lang=${encodeURIComponent(chLang)}&limit=100&offset=${chOffset}`
+      `/api/manga/${selected.user_manga_id}/chapters?lang=${encodeURIComponent(chLang)}&limit=100&offset=${reset ? 0 : chOffset}`
     );
-    if (reset && data.language_counts) {
-      applyLanguageCounts(data.language_counts, data.lang);
+    mergeChCachePage(cacheKey, data, reset);
+    if (reset) box.innerHTML = "";
+    renderChapterBatch(data, { reset });
+    if (usedCache) {
+      msg.textContent = (msg.textContent || "").replace(/^Cached chapters.*$/, "") || msg.textContent;
     }
-    chTotal = data.total || 0;
-    const pendingJobs = [];
-    data.chapters.forEach((ch) => {
-      const row = appendChapterRow(box, ch, chLang);
-      const dl = ch.download;
-      const busy = !!(dl && (dl.status === "pending" || dl.status === "running"));
-      const cb = row.querySelector("input[type=checkbox]");
-      if (busy && dl.job_id) pendingJobs.push({ id: ch.id, jobId: dl.job_id, row, cb });
-    });
-    chOffset += data.chapters.length;
-    chHasMore = chOffset < chTotal && data.chapters.length > 0;
-    if (!chOffset) msg.textContent = `No ${chLang.toUpperCase()} chapters on MangaDex for this title.`;
-    else {
-      let note = chHasMore
-        ? `${chOffset} / ${chTotal} chapter(s) · scroll for more · ☑ = offline`
-        : `${chOffset} / ${chTotal} chapter(s) · ☑ = offline`;
-      if (chTotal > 0 && chTotal < 20 && chLang === "en") {
-        note += " · EN may only have extras — try another language";
-      }
-      msg.textContent = note;
-    }
-    pendingJobs.forEach(({ id, jobId, row, cb }) => trackDownload(id, jobId, row, cb));
   } catch (err) {
-    msg.textContent = err.message;
+    if (reset && (usedCache || readChCache(cacheKey))) {
+      const cached = readChCache(cacheKey);
+      msg.textContent = cached
+        ? `Offline — showing cached chapters (${formatCacheAge(cached.at)})`
+        : err.message;
+    } else if (!reset) {
+      chHasMore = false;
+      if (navigator.onLine === false) {
+        msg.textContent = `${msg.textContent || ""} · offline (open online once to load more)`;
+      }
+    } else {
+      msg.textContent = err.message;
+    }
   } finally {
     chLoading = false;
   }
@@ -526,8 +700,8 @@ $("#d-remove").onclick = async () => {
   $("#ch-msg").textContent = "Select a title to load chapters.";
   load();
 };
-$("#ch-refresh").onclick = loadChapters;
-$("#ch-lang").onchange = loadChapters;
+$("#ch-refresh").onclick = () => loadChapters({ reset: true, forceOnline: true });
+$("#ch-lang").onchange = () => loadChapters({ reset: true });
 
 $("#d-read-url").onclick = () => {
   const url = $("#ch-url").value.trim();
